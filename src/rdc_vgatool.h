@@ -28,3 +28,23 @@
 #define VIDEOMEM_SIZE_128M      0x08000000
 #define VIDEOMEM_SIZE_256M      0x10000000
 #define VIDEOMEM_SIZE_512M      0x20000000
+
+BYTE GetReg(WORD base);
+void SetReg(WORD base, BYTE val);
+void vSetRDCIOBase(void *base);
+void GetIndexReg(WORD base, BYTE index, BYTE* val);
+void SetIndexReg(WORD base, BYTE index, BYTE val);
+void GetIndexRegMask(WORD base, BYTE index, BYTE mask, BYTE* val);
+void SetIndexRegMask(WORD base, BYTE index, BYTE mask, BYTE val);
+void vRDCOpenKey(ScrnInfoPtr pScrn);
+void vSetStartAddressCRT1(RDCRecPtr pRDC, ULONG base);
+ULONG RDCGetMemBandWidth(ScrnInfoPtr pScrn);
+void VGA_LOAD_PALETTE_INDEX(BYTE index, BYTE red, BYTE green, BYTE blue);
+Bool bRDCRegInit(ScrnInfoPtr pScrn);
+ULONG GetVRAMInfo(ScrnInfoPtr pScrn);
+Bool RDCFilterModeByBandWidth(ScrnInfoPtr pScrn, DisplayModePtr mode);
+void vRDCLoadPalette(ScrnInfoPtr pScrn, int numColors, int *indices, LOCO *colors, VisualPtr pVisual);
+void RDCDisplayPowerManagementSet(ScrnInfoPtr pScrn, int PowerManagementMode, int flags);
+void vSetDispalyStartAddress(xf86CrtcPtr crtc, int x, int y);
+CBStatus CBIOS_SetEDIDToModeTable(ScrnInfoPtr pScrn, EDID_DETAILED_TIMING *pEDIDDetailedTiming);
+void CreateEDIDDetailedTimingList(UCHAR *ucEdidBuffer, ULONG ulEdidBufferSize, EDID_DETAILED_TIMING *pEDIDDetailedTiming);

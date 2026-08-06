@@ -31,7 +31,6 @@
 #include "xf86_OSproc.h"
 #include "xf86cmap.h"
 #include "compiler.h"
-#include "mibstore.h"
 #include "vgaHW.h"
 #include "mipointer.h"
 #include "micmap.h"
@@ -66,6 +65,8 @@
 
 #include "rdc_extension.h"
 
+int RDCGFXUtilityProc(xRDCGFXCommandReq* req);
+
 
 
 
@@ -98,7 +99,7 @@ static int ProcRDCGFXQueryVersion (ClientPtr client)
     if(client->swapped)
     {
 		_swaps(&rep.sequenceNumber, n);
-        _swapl(&rep.length, n);
+        _swapl((CARD32 *)&rep.length, n);
         _swaps(&rep.majorVersion, n);
         _swaps(&rep.minorVersion, n);
     }

@@ -24,12 +24,14 @@
 #endif
 
 #include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #include "xf86.h"
 #include "xf86_OSproc.h"
 #include "xf86cmap.h"
 #include "compiler.h"
-#include "mibstore.h"
 #include "vgaHW.h"
 #include "mipointer.h"
 #include "micmap.h"
@@ -183,34 +185,60 @@ Bool RDCMapVBIOS(ScrnInfoPtr pScrn)
     
     if (pRDC->ulROMType == 0)
     {
+#if XSERVER_LIBPCIACCESS
+        pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);
+        if (pRDC->BIOSVirtualAddr &&
+            pci_device_read_rom(pRDC->PciInfo, pRDC->BIOSVirtualAddr) == 0)
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "Read VBIOS from PCI ROM\n");
+        }
+        else
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "Read VBIOS from PCI ROM FAILED\n");
+            xfree(pRDC->BIOSVirtualAddr);
+            pRDC->BIOSVirtualAddr = NULL;
+        }
+#else
         pRDC->BIOSVirtualAddr = xf86MapVidMem(pScrn->scrnIndex, VIDMEM_READONLY, BIOS_ROM_PHY_BASE, BIOS_ROM_SIZE);
+#endif
 
         
-        VenID = *(USHORT*)(pRDC->BIOSVirtualAddr+0x40);
-        DevID = *(USHORT*)(pRDC->BIOSVirtualAddr+0x42);
-
-        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "Vendor ID = %X, Device ID = %X\n", VenID, DevID);
-
-        if (VenID == PCI_VENDOR_RDC)
+        if (pRDC->BIOSVirtualAddr)
         {
-            if (DevID == PCI_CHIP_M2010 ||
-                DevID == PCI_CHIP_M2011 ||
-                DevID == PCI_CHIP_M2012 ||
-                DevID == PCI_CHIP_M2013 ||
-                DevID == PCI_CHIP_M2014 ||
-                DevID == PCI_CHIP_M2015 ||
-                DevID == PCI_CHIP_M2200 ||
-                DevID == PCI_CHIP_M2010_A0)
+            VenID = *(USHORT*)(pRDC->BIOSVirtualAddr+0x40);
+            DevID = *(USHORT*)(pRDC->BIOSVirtualAddr+0x42);
+
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "Vendor ID = %X, Device ID = %X\n", VenID, DevID);
+
+            if (VenID == PCI_VENDOR_RDC)
             {
-                xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "VBIOS exist\n");
-                bVBIOSExist = TRUE;
+                if (DevID == PCI_CHIP_M2010 ||
+                    DevID == PCI_CHIP_M2011 ||
+                    DevID == PCI_CHIP_M2012 ||
+                    DevID == PCI_CHIP_M2013 ||
+                    DevID == PCI_CHIP_M2014 ||
+                    DevID == PCI_CHIP_M2015 ||
+                    DevID == PCI_CHIP_M2200 ||
+                    DevID == PCI_CHIP_M2010_A0)
+                {
+                    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "VBIOS exist\n");
+                    bVBIOSExist = TRUE;
+                };
             };
-        };
+        }
+        else
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "No VBIOS buffer available, trying ROM file\n");
+        }
         
         if (bVBIOSExist)
         {
             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "pRDC->BIOSVirtualAddr = 0x%08x\n", pRDC->BIOSVirtualAddr);
+#if XSERVER_LIBPCIACCESS
+            pRDC->ulROMType = 2;
+#else
             pRDC->ulROMType = 1;
+#endif
         }
         else
         {
@@ -222,23 +250,17 @@ Bool RDCMapVBIOS(ScrnInfoPtr pScrn)
     if (pRDC->ulROMType == 0)
     {
         
+        xfree(pRDC->BIOSVirtualAddr);
+        pRDC->BIOSVirtualAddr = NULL;
+
         fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
         if (!fpVBIOS)
         {
             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\" not found()==\n");
         }
-    
-        
-        pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);
-        if (!pRDC->BIOSVirtualAddr)
+        else
         {
-            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "Read BIOS ROM file: Mem Allocate Fail!!==\n");
-            fclose (fpVBIOS);
-        }
-
-        
-        if (fpVBIOS && pRDC->BIOSVirtualAddr)
-        {
+            pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);
             pRDC->ulROMType = 2;
             for (i = 0; i < BIOS_ROM_SIZE; i++)
             {
@@ -276,7 +298,11 @@ Bool RDCUnmapVBIOS(ScrnInfoPtr pScrn)
 
     if (pRDC->ulROMType == 1)
     {
+#ifndef XSERVER_LIBPCIACCESS
         xf86UnMapVidMem(pScrn->scrnIndex, (pointer) pRDC->BIOSVirtualAddr, BIOS_ROM_SIZE);
+#else
+        xfree(pRDC->BIOSVirtualAddr);
+#endif
     }
     else if (pRDC->ulROMType == 2)
     {
@@ -288,21 +314,34 @@ Bool RDCUnmapVBIOS(ScrnInfoPtr pScrn)
 }
 
 
+static int EC_port_fd = -1;
+
+static int EC_get_port_fd(void)
+{
+    if (EC_port_fd < 0)
+        EC_port_fd = open("/dev/port", O_RDWR);
+    return EC_port_fd;
+}
+
 ULONG EC_ReadPortUchar(BYTE *port, BYTE *value)
 {
     xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Enter EC_ReadPortUchar()\n");
 
+    int fd = EC_get_port_fd();
+    BYTE status;
     int i;
+    if (fd < 0)
+        return EC_ACCESS_FAIL;
     for (i=0 ; i<10 ; i++)
     {
         usleep(700);
         
-        
-        
-        if (inb(0x66) & BIT0)
+        if ((lseek(fd, 0x66, SEEK_SET) >= 0) &&
+            (read(fd, &status, 1) == 1) && (status & BIT0))
         {
-            *value = (BYTE)inb((ULONG)port);
-            return EC_ACCESS_SUCCESS;
+            if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0 &&
+                read(fd, value, 1) == 1)
+                return EC_ACCESS_SUCCESS;
         }
     };
 
@@ -315,16 +354,20 @@ void EC_WritePortUchar(BYTE *port, BYTE data)
 {
     xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Enter EC_WritePortUchar()\n");
     
+    int fd = EC_get_port_fd();
+    BYTE status;
     int i;
+    if (fd < 0)
+        return;
     for (i=0 ; i<10 ; i++)
     {
         usleep(700);
         
-        
-        
-        if (!(inb(0x66) & BIT1)) 
+        if ((lseek(fd, 0x66, SEEK_SET) >= 0) &&
+            (read(fd, &status, 1) == 1) && !(status & BIT1))
         {
-            outb((ULONG)port, data);
+            if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0)
+                write(fd, &data, 1);
             break;
         };
     };

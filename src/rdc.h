@@ -63,6 +63,32 @@
 
 
 #include "CInt10.h"
+#include "CInt10FunProto.h"
+
+#include <stdlib.h>
+
+#ifndef xalloc
+#define xalloc(size)        malloc(size)
+#define xcalloc(num, size)  calloc((num), (size))
+#define xrealloc(ptr, size) realloc((ptr), (size))
+#define xfree(ptr)          free(ptr)
+#endif
+
+#ifndef VIDMEM_READONLY
+#define VIDMEM_READONLY         0x00000001
+#endif
+#ifndef VIDMEM_FRAMEBUFFER
+#define VIDMEM_FRAMEBUFFER      0x00000002
+#endif
+#ifndef VIDMEM_MMIO
+#define VIDMEM_MMIO             0x00000004
+#endif
+#ifndef VIDMEM_READSIDEEFFECT
+#define VIDMEM_READSIDEEFFECT   0x00000008
+#endif
+#ifndef VIDMEM_SPARSE
+#define VIDMEM_SPARSE           0x00000010
+#endif
 
 #define PCI_DEV_MAP_FLAG_WRITABLE       (1U<<0)
 #define PCI_DEV_MAP_FLAG_WRITE_COMBINE  (1U<<1)
@@ -679,9 +705,9 @@ struct _RDCRec
 
     ULONG               MemoryBandwidth;         
 
-    IOADDRESS           IODBase;                
-    IOADDRESS           PIOOffset;
-    IOADDRESS           RelocateIO;
+    unsigned long       IODBase;                
+    unsigned long       PIOOffset;
+    unsigned long       RelocateIO;
 
     USHORT              usSupportDevice;
 
@@ -724,8 +750,8 @@ struct _RDCRec
     Bool                bVPColorEnhance;
 
     
-    BYTE                bHRatio;
-    BYTE                bVRatio;
+    unsigned long       bHRatio;
+    unsigned long       bVRatio;
 
     int                 iFBDev;
     
@@ -824,6 +850,25 @@ typedef struct _RDCOutputPrivateRec {
 #include "rdc_cursor.h"
 #include "rdc_video.h"
 #include "rdc_rotation.h"
+
+Bool RDCMapMem(ScrnInfoPtr pScrn);
+Bool RDCUnmapMem(ScrnInfoPtr pScrn);
+Bool RDCMapMMIO(ScrnInfoPtr pScrn);
+void RDCUnmapMMIO(ScrnInfoPtr pScrn);
+Bool RDCMapVBIOS(ScrnInfoPtr pScrn);
+Bool RDCUnmapVBIOS(ScrnInfoPtr pScrn);
+ULONG EC_ReadPortUchar(BYTE *port, BYTE *value);
+void EC_WritePortUchar(BYTE *port, BYTE data);
+void EC_DetectCaps(ScrnInfoPtr pScrn, ECINFO* pECChip);
+void RDCDisplayExtensionInit(ScrnInfoPtr pScrn);
+void SetVIDColor(RDCRecPtr pRDC);
+Bool RDCCursorInit(ScreenPtr pScreen);
+Bool bInitHWC(ScrnInfoPtr pScrn, RDCRecPtr pRDC);
+void RDCHideCursor(ScrnInfoPtr pScrn);
+void RDCVideoInit(ScreenPtr pScreen);
+void RDCAllocateVPOSTMem(ScrnInfoPtr pScrn, RDCPortPrivPtr pRDCPortPriv, long width, long height, Bool bRDC_Video);
+Bool RDCSetMode(ScrnInfoPtr pScrn, DisplayModePtr mode);
+DisplayModePtr RDCBuildModePool(ScrnInfoPtr pScrn);
 
 
 #endif

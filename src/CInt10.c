@@ -2936,7 +2936,7 @@ void CBIOSInitPortConfig(BYTE* pjROMLinearAddr)
     }
     if(wVGAROMSIZE) 
     {
-        pjROMLinearAddr = (BYTE*)((int)(pjROMLinearAddr) + wVGAROMSIZE + 4); 
+        pjROMLinearAddr = (BYTE*)((unsigned long)(pjROMLinearAddr) + wVGAROMSIZE + 4); 
                                            
         for(i=0;i<(sizeof(PortConfig)/sizeof(PORT_CONFIG));i++)
         {
@@ -3001,7 +3001,7 @@ void CBIOSInitLCDTable(BYTE* pjROMLinearAddr)
         }
         
         
-        pjROMLinearAddr = (BYTE*)((int)(pjROMLinearAddr) +
+        pjROMLinearAddr = (BYTE*)((unsigned long)(pjROMLinearAddr) +
                                            wVGAROMSIZE +  
                                                      6 +  
                       (wDevAddress-1)*sizeof(PANEL_INFO));
@@ -3036,7 +3036,7 @@ void CBIOSInitHDMITable(BYTE* pjROMLinearAddr)
     {
         
         
-        pTMDSTxTable = (TxEncDetect*)((int)(pjROMLinearAddr) +
+        pTMDSTxTable = (TxEncDetect*)((unsigned long)(pjROMLinearAddr) +
                                            wVGAROMSIZE +       
                                                      5);       
     }

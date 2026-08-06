@@ -28,7 +28,6 @@
 #include "xf86_OSproc.h"
 #include "xf86cmap.h"
 #include "compiler.h"
-#include "mibstore.h"
 #include "vgaHW.h"
 #include "mipointer.h"
 #include "micmap.h"
@@ -106,7 +105,25 @@ extern Bool bGetLineTerm(_LINEInfo *LineInfo, LINEPARAM *dsLineParam);
 #ifdef HAVE_XAA
 extern Bool RDCAccelInit(ScreenPtr pScreen);
 #else
-static inline  Bool RDCAccelInit(ScreenPtr pScreen) { return TRUE; }
+static ExaDriverPtr RDCInitExa(ScreenPtr pScreen);
+Bool RDCAccelInit(ScreenPtr pScreen)
+{
+    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    RDCRecPtr pRDC = RDCPTR(pScrn);
+
+    if (pRDC->useEXA)
+    {
+        pRDC->exaDriverPtr = RDCInitExa(pScreen);
+        if (!pRDC->exaDriverPtr)
+        {
+            xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Init EXA Fail== \n");
+            pRDC->noAccel = TRUE;
+            return FALSE;
+        }
+        xf86DrvMsg(pScrn->scrnIndex, X_INFO, "[EXA] Enabled EXA acceleration.\n");
+    }
+    return TRUE;
+}
 #endif
 static void RDCSync(ScrnInfoPtr pScrn);
 static void RDCSetupForScreenToScreenCopy(ScrnInfoPtr pScrn, 

@@ -103,6 +103,14 @@ typedef struct  _PKT_SC
     
 } PKT_SC, *PPKT_SC;
 
+UCHAR *pjRequestCMDQ(RDCRecPtr pRDC, ULONG ulDataLen);
+Bool bCRInitCMDQInfo(ScrnInfoPtr pScrn, RDCRecPtr pRDC);
+Bool bCREnableCMDQ(RDCRecPtr pRDC);
+Bool bCREnable2D(RDCRecPtr pRDC);
+void vCRDisable2D(RDCRecPtr pRDC);
+int FireCRCMDQ(int iDev, void *pCmd, unsigned int size);
+unsigned int GetFBIFCaps(int iDev);
+
 
 #define    MAX_SRC_X                0x7FF
 #define    MAX_SRC_Y                0x7FF

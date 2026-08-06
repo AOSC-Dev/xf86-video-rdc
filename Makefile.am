@@ -20,3 +20,26 @@
 
 AUTOMAKE_OPTIONS = foreign
 SUBDIRS = src
+
+EXTRA_DIST = misc/RDCVBIOS.ROM misc/xorg.conf
+
+install-data-local:
+	$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers
+	$(INSTALL_DATA) $(srcdir)/misc/RDCVBIOS.ROM $(DESTDIR)$(moduledir)/drivers/RDCVBIOS.ROM
+	@if test ! -f $(DESTDIR)$(sysconfdir)/X11/xorg.conf; then \
+		echo "  Installing sample xorg.conf to $(sysconfdir)/X11/xorg.conf"; \
+		$(MKDIR_P) $(DESTDIR)$(sysconfdir)/X11; \
+		$(INSTALL_DATA) $(srcdir)/misc/xorg.conf $(DESTDIR)$(sysconfdir)/X11/xorg.conf; \
+	else \
+		echo "  $(sysconfdir)/X11/xorg.conf already exists, not overwriting"; \
+	fi
+
+uninstall-local:
+	rm -f $(DESTDIR)$(moduledir)/drivers/RDCVBIOS.ROM
+
+clean-local:
+	rm -f Makefile Makefile.in aclocal.m4 compile config.guess config.h config.h.in config.log config.status config.sub configure depcomp install-sh libtool ltmain.sh missing stamp-h1
+	rm -rf autom4te.cache
+	rm -f src/rdcm15_drv.la
+	rm -rf src/.deps src/.libs
+	rm -f src/*.o src/*.lo

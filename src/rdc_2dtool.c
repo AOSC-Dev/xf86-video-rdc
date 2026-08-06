@@ -27,7 +27,6 @@
 #include "xf86_OSproc.h"
 #include "xf86cmap.h"
 #include "compiler.h"
-#include "mibstore.h"
 #include "vgaHW.h"
 #include "mipointer.h"
 #include "micmap.h"
@@ -438,14 +437,14 @@ vCRWaitEngIdle(RDCRecPtr pRDC)
     xf86DrvMsgVerb(0, X_INFO, 10, "<<== vCRWaitEngIdle()\n");
 }
 
-int FireCRCMDQ(int iDev, unsigned int *pCmd, unsigned int size)
+int FireCRCMDQ(int iDev, void *pCmd, unsigned int size)
 {
     int iRet;
     unsigned int ioctlPara[3];
 
     ioctlPara[0] = size;
     ioctlPara[1] = 0;
-    ioctlPara[2] = (unsigned int) pCmd;
+    ioctlPara[2] = (unsigned int) (uintptr_t) pCmd;
     
     iRet = ioctl(iDev, IOCTL_CR_CMDQ, ioctlPara);
     if (iRet < 0)

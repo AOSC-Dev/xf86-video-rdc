@@ -34,7 +34,6 @@
 #endif
 #include "xf86cmap.h"
 #include "compiler.h"
-#include "mibstore.h"
 #include "vgaHW.h"
 #include "mipointer.h"
 #include "micmap.h"
@@ -675,16 +674,10 @@ RDCPreInitDual(ScrnInfoPtr pScrn, int flags)
                (pScrn->chipset != NULL) ? pScrn->chipset : "Unknown rdc");
 
     
-#if XF86_VERSION_CURRENT < XF86_VERSION_NUMERIC(4,2,99,0,0)
-     pRDC->IODBase = 0;
-#else
-     pRDC->IODBase = pScrn->domainIOBase;  
-#endif
-     
 #if XSERVER_LIBPCIACCESS
-    pRDC->RelocateIO = (IOADDRESS)(pRDC->PciInfo->regions[2].base_addr + pRDC->IODBase);
+    pRDC->RelocateIO = (unsigned long)(pRDC->PciInfo->regions[2].base_addr + pRDC->IODBase);
 #else    
-    pRDC->RelocateIO = (IOADDRESS)(pRDC->PciInfo->ioBase[2] + pRDC->IODBase);
+    pRDC->RelocateIO = (unsigned long)(pRDC->PciInfo->ioBase[2] + pRDC->IODBase);
 #endif
     
     if (pRDC->pEnt->device->MemBase != 0) 

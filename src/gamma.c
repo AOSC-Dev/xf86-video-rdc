@@ -22,11 +22,7 @@
 #include <config.h>
 #endif
 
-#ifndef XFree86Module
 #include "compiler.h"
-#else
-#include "xf86_ansic.h"
-#endif
 
 #include "xf86str.h"
 #include "vbe.h"

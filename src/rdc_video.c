@@ -27,7 +27,6 @@
 #include "xf86_OSproc.h"
 #include "xf86cmap.h"
 #include "compiler.h"
-#include "mibstore.h"
 #include "vgaHW.h"
 #include "mipointer.h"
 #include "micmap.h"
@@ -1144,7 +1143,7 @@ void RDCCopyFourCCVPOST(RDCRecPtr  pRDC,
 
                 if (width !=0 && height !=0)
                 {
-                    pSubImage = (unsigned int)pVideoInfo + sizeof(VideoInfo);
+                    pSubImage = (unsigned char *)pVideoInfo + sizeof(VideoInfo);
 
                     for (i=xpos ; i<xpos+width ; i++ )
                     {
@@ -1232,7 +1231,7 @@ void RDCCopyFourCCVPOST(RDCRecPtr  pRDC,
 
                 if (width !=0 && height !=0)
                 {
-                    pSubImage = (unsigned int)pVideoInfo + sizeof(VideoInfo);
+                    pSubImage = (unsigned char *)pVideoInfo + sizeof(VideoInfo);
 
                     for (i=xpos ; i<xpos+width ; i++ )
                     {
@@ -1389,6 +1388,7 @@ void UpdateVPost(RDCRecPtr pRDC, VPOSTHWINFOPtr pVPHwInfo)
     }
 }
 
+void
 UpdateOverlay(RDCRecPtr pRDC, VIDHWINFOPtr pVIDHwInfo, int iSrcBufIndex)
 {
     PKT_SC          *pSingleCMD;

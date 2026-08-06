@@ -26,11 +26,11 @@ typedef unsigned char   CBStatus;
 
 typedef unsigned char   UCHAR;
 typedef unsigned short  WORD;
-typedef unsigned long   DWORD;
+typedef unsigned int    DWORD;
 typedef char*           PCHAR;
 typedef unsigned short  USHORT;
 typedef long            LONG;
-typedef unsigned long   ULONG;
+typedef unsigned int    ULONG;
 typedef unsigned long long   uint64;
 
 

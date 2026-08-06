@@ -79,7 +79,7 @@ BYTE bSetSAA7105TimingReg(BYTE bDisplayPath, WORD wModeNum)
            wModeNum == pSAAModeTable->Mode_ID_32bpp)
            break;
         else
-            pSAAModeTable = (SAA7105_Mode_TABLE*)((int)pSAAModeTable + sizeof(SAA7105_Mode_TABLE));
+            pSAAModeTable = (SAA7105_Mode_TABLE*)((unsigned long)pSAAModeTable + sizeof(SAA7105_Mode_TABLE));
     }
     if(i==TVSupportModeCnt)
     {
@@ -143,7 +143,7 @@ BYTE bSetFS473TimingReg(BYTE bDisplayPath, WORD wModeNum)
     do{
         CBIOSWriteI2C(ucI2CPort, ucAddr, pFS473FormatReg->ucIndex,pFS473FormatReg->ucDataLow);
         CBIOSWriteI2C(ucI2CPort, ucAddr, pFS473FormatReg->ucIndex+1,pFS473FormatReg->ucDataHigh);
-        pFS473FormatReg = (FS473_I2C_REG*)((int)pFS473FormatReg + sizeof(FS473_I2C_REG));
+        pFS473FormatReg = (FS473_I2C_REG*)((unsigned long)pFS473FormatReg + sizeof(FS473_I2C_REG));
     }while(pFS473FormatReg->ucIndex!=0xFF);
     
         
@@ -155,7 +155,7 @@ BYTE bSetFS473TimingReg(BYTE bDisplayPath, WORD wModeNum)
            wModeNum == pFS473ModeTable->Mode_ID_32bpp)
            break;
         else
-            pFS473ModeTable = (FS473_Mode_TABLE*)((int)pFS473ModeTable + sizeof(FS473_Mode_TABLE));
+            pFS473ModeTable = (FS473_Mode_TABLE*)((unsigned long)pFS473ModeTable + sizeof(FS473_Mode_TABLE));
     }
     if(i==TVSupportModeCnt)
     {
@@ -284,7 +284,7 @@ void SetSAA7105InitReg()
     
     do{
         CBIOSWriteI2C(ucI2CPort, ucAddr, pInitSAA7105Reg->ucIndex,pInitSAA7105Reg->ucData);
-        pInitSAA7105Reg = (SAA7105_I2C_REG*)((int)pInitSAA7105Reg + sizeof(SAA7105_I2C_REG));
+        pInitSAA7105Reg = (SAA7105_I2C_REG*)((unsigned long)pInitSAA7105Reg + sizeof(SAA7105_I2C_REG));
     }while(pInitSAA7105Reg->ucIndex!=0xFF);
 
     CBIOSDebugPrint((0, "==SetSAA7105InitReg Completed !!==\n"));
@@ -299,7 +299,7 @@ void SetFS473InitReg()
     do{
         CBIOSWriteI2C(ucI2CPort, ucAddr, pInitFS473Reg->ucIndex,pInitFS473Reg->ucDataLow);
         CBIOSWriteI2C(ucI2CPort, ucAddr, pInitFS473Reg->ucIndex+1,pInitFS473Reg->ucDataHigh);
-        pInitFS473Reg = (FS473_I2C_REG*)((int)pInitFS473Reg + sizeof(FS473_I2C_REG));
+        pInitFS473Reg = (FS473_I2C_REG*)((unsigned long)pInitFS473Reg + sizeof(FS473_I2C_REG));
     }while(pInitFS473Reg->ucIndex!=0xFF);
     CBIOSDebugPrint((0, "==SetFS473InitReg Completed !!==\n"));
 }
@@ -502,7 +502,7 @@ void UpdatePLLByTVEnc(DWORD dwPixelClock)
                 {
                     break;
                 }else
-                    pFSModePLLTable = (FSPLLPatch*)((int)pFSModePLLTable + sizeof(FSPLLPatch));
+                    pFSModePLLTable = (FSPLLPatch*)((unsigned long)pFSModePLLTable + sizeof(FSPLLPatch));
             }
             if(i==TMDSSupportModeCnt)
 			{
@@ -522,7 +522,7 @@ void UpdatePLLByTVEnc(DWORD dwPixelClock)
                 {
                     break;
                 }else
-                    pSAAModePLLTable = (SAAPLLPatch*)((int)pSAAModePLLTable + sizeof(SAAPLLPatch));
+                    pSAAModePLLTable = (SAAPLLPatch*)((unsigned long)pSAAModePLLTable + sizeof(SAAPLLPatch));
             }
             if(i==TMDSSupportModeCnt)
 			{

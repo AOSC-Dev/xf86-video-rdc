@@ -57,14 +57,14 @@ void SetEP932MInitReg(BYTE ucDeviceID)
     if(ucDeviceID == DVIIndex)
     {
         CBIOSWriteI2C(ucI2CPort, ucAddr, pInitEP932MReg->ucIndex,pInitEP932MReg->ucData);
-        pInitEP932MReg = (HDMI_I2C_REG*)((int)pInitEP932MReg + sizeof(HDMI_I2C_REG));
+        pInitEP932MReg = (HDMI_I2C_REG*)((unsigned long)pInitEP932MReg + sizeof(HDMI_I2C_REG));
         CBIOSWriteI2C(ucI2CPort, ucAddr, pInitEP932MReg->ucIndex,pInitEP932MReg->ucData);
     }
     else 
     {
         do{
             CBIOSWriteI2C(ucI2CPort, ucAddr, pInitEP932MReg->ucIndex,pInitEP932MReg->ucData);
-            pInitEP932MReg = (HDMI_I2C_REG*)((int)pInitEP932MReg + sizeof(HDMI_I2C_REG));
+            pInitEP932MReg = (HDMI_I2C_REG*)((unsigned long)pInitEP932MReg + sizeof(HDMI_I2C_REG));
         }while(pInitEP932MReg->ucIndex!=0xFF);
     }
     CBIOSDebugPrint((0, "==Set EP932M Init Reg Completed !!==\n"));

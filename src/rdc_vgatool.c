@@ -27,10 +27,28 @@
 #include "xf86_OSproc.h"
 #include "xf86cmap.h"
 #include "compiler.h"
-#include "mibstore.h"
 #include "vgaHW.h"
 #include "mipointer.h"
 #include "micmap.h"
+
+static volatile BYTE *RDC_IOBase = NULL;
+
+void vSetRDCIOBase(void *base)
+{
+    RDC_IOBase = (volatile BYTE *)base;
+}
+
+/* This GPU aliases its I/O ports into the MMIO BAR (MMIOVirtualAddr + port).
+ * Use that mapping instead of the raw IN/OUT instructions, which require
+ * iopl() that newer kernels may no longer provide. */
+#ifndef InPort
+#define InPort(port)  \
+    (RDC_IOBase ? (BYTE)(*(volatile BYTE *)(RDC_IOBase + (port))) : (BYTE)0)
+#endif
+#ifndef OutPort
+#define OutPort(port, val)  \
+    do { if (RDC_IOBase) *(volatile BYTE *)(RDC_IOBase + (port)) = (BYTE)(val); } while (0)
+#endif
 
 #include "fb.h"
 #include "regionstr.h"
