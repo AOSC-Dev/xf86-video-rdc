@@ -392,7 +392,6 @@ static Bool rdc_pci_probe (DriverPtr		driver,
         case PCI_CHIP_M2012:
         case PCI_CHIP_M2013:
         case PCI_CHIP_M2014:
-        case PCI_CHIP_M2015:
         case PCI_CHIP_M2200:
             pScrn->PreInit = RDCPreInit;
             pScrn->ScreenInit = RDCScreenInit;
@@ -402,6 +401,23 @@ static Bool rdc_pci_probe (DriverPtr		driver,
             pScrn->LeaveVT = RDCLeaveVT;
             pScrn->FreeScreen = RDCFreeScreen;
             pScrn->ValidMode = RDCValidMode;
+            break;
+
+        case PCI_CHIP_M2015:
+#ifdef HAVE_DUAL
+            xf86DrvMsgVerb(0, X_INFO, DefaultLevel, "==M2015 use dual display path==\n");
+            RDCInitpScrnDual(pScrn);
+#else
+            xf86DrvMsgVerb(0, X_INFO, DefaultLevel, "==M2015 use single display path==\n");
+            pScrn->PreInit = RDCPreInit;
+            pScrn->ScreenInit = RDCScreenInit;
+            pScrn->SwitchMode = RDCSwitchMode;
+            pScrn->AdjustFrame = RDCAdjustFrame;   
+            pScrn->EnterVT = RDCEnterVT;
+            pScrn->LeaveVT = RDCLeaveVT;
+            pScrn->FreeScreen = RDCFreeScreen;
+            pScrn->ValidMode = RDCValidMode;
+#endif
             break;
 
 	default:
@@ -467,6 +483,15 @@ RDCProbe(DriverPtr drv, int flags)
                 pScrn->name = RDC_NAME;
             
                 pScrn->Probe = RDCProbe;
+#ifdef HAVE_DUAL
+                if (usedChips[i] == PCI_CHIP_M2015)
+                {
+                    xf86DrvMsgVerb(0, X_INFO, DefaultLevel, "==M2015 use dual display path==\n");
+                    RDCInitpScrnDual(pScrn);
+                }
+                else
+                {
+#endif
                 pScrn->PreInit = RDCPreInit;
                 pScrn->ScreenInit = RDCScreenInit;
                 pScrn->SwitchMode = RDCSwitchMode;
@@ -475,6 +500,9 @@ RDCProbe(DriverPtr drv, int flags)
                 pScrn->LeaveVT = RDCLeaveVT;
                 pScrn->FreeScreen = RDCFreeScreen;
                 pScrn->ValidMode = RDCValidMode;
+#ifdef HAVE_DUAL
+                }
+#endif
             
                 foundScreen = TRUE;        
             } 
