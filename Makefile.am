@@ -21,21 +21,26 @@
 AUTOMAKE_OPTIONS = foreign
 SUBDIRS = src
 
-EXTRA_DIST = misc/RDCVBIOS.ROM misc/xorg.conf
+EXTRA_DIST = misc/RDCVBIOS.ROM misc/00-rdc.conf
+
+# Xorg reads user config snippets from /etc/X11/xorg.conf.d regardless of the
+# build's sysconfdir (e.g. AOSC uses /usr/etc but Xorg still reads /etc).
+XORG_CONFIG_DIR = /etc/X11/xorg.conf.d
 
 install-data-local:
 	$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers
 	$(INSTALL_DATA) $(srcdir)/misc/RDCVBIOS.ROM $(DESTDIR)$(moduledir)/drivers/RDCVBIOS.ROM
-	@if test ! -f $(DESTDIR)$(sysconfdir)/X11/xorg.conf; then \
-		echo "  Installing sample xorg.conf to $(sysconfdir)/X11/xorg.conf"; \
-		$(MKDIR_P) $(DESTDIR)$(sysconfdir)/X11; \
-		$(INSTALL_DATA) $(srcdir)/misc/xorg.conf $(DESTDIR)$(sysconfdir)/X11/xorg.conf; \
+	@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \
+		echo "  Installing xorg.conf.d/00-rdc.conf to $(XORG_CONFIG_DIR)"; \
+		$(MKDIR_P) $(DESTDIR)$(XORG_CONFIG_DIR); \
+		$(INSTALL_DATA) $(srcdir)/misc/00-rdc.conf $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; \
 	else \
-		echo "  $(sysconfdir)/X11/xorg.conf already exists, not overwriting"; \
+		echo "  $(XORG_CONFIG_DIR)/00-rdc.conf already exists, not overwriting"; \
 	fi
 
 uninstall-local:
 	rm -f $(DESTDIR)$(moduledir)/drivers/RDCVBIOS.ROM
+	rm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf
 
 clean-local:
 	rm -f Makefile Makefile.in aclocal.m4 compile config.guess config.h config.h.in config.log config.status config.sub configure depcomp install-sh libtool ltmain.sh missing stamp-h1
