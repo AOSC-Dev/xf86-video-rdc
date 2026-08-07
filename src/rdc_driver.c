@@ -1001,19 +1001,23 @@ RDCPreInit(ScrnInfoPtr pScrn, int flags)
         
         if (RDCCheckCapture(pScrn))
         {
-            xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "Reserved Capture buffer\n");
-            
-            
-            if (pRDC->FbMapSize < VIDEOMEM_SIZE_16M)
+            /* Reserve the capture buffer only if enough framebuffer memory
+             * remains for the maximum supported mode (1920x1200 @ 32bpp)
+             * plus the command queue and cursor buffers. On 16MB boards the
+             * 7MB capture buffer would starve the framebuffer, so it is
+             * skipped in that case. */
+            if ((pRDC->FbMapSize - CAPTURE_BUFFER_SIZE -
+                 DEFAULT_CMDQ_SIZE - (HQ_HWC_SIZE * DEFAULT_HWC_NUM)) >=
+                (1920 * 1200 * 4))
             {
-                xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "Video Memory in not enough for Capture & Xorg\n");
-                return FALSE;
+                xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "Reserved Capture buffer\n");
+                pRDC->AvailableFBsize -= CAPTURE_BUFFER_SIZE;
             }
-
-            
-            
-            
-            pRDC->AvailableFBsize -= CAPTURE_BUFFER_SIZE;
+            else
+            {
+                xf86DrvMsgVerb(0, X_INFO, ErrorLevel,
+                    "Capture buffer skipped: insufficient FB memory for 1920x1200 framebuffer\n");
+            }
         }
 
 
@@ -1552,6 +1556,14 @@ RDCScreenInit(ScreenPtr pScreen, int argc, char **argv)
 
     EC_DetectCaps(pScrn, &(pRDC->ECChipInfo));
 
+    /* This GPU only provides 2D acceleration; there is no 3D/OpenGL engine,
+     * so GLX hardware acceleration is unavailable by design. Any AIGLX
+     * software-renderer warnings above are expected on this hardware. */
+    xf86DrvMsg(scrnIndex, X_INFO,
+        "RDC: GPU supports 2D acceleration only; GLX/OpenGL hardware "
+        "acceleration is not available (no 3D engine). AIGLX software-renderer "
+        "warnings are expected and can be ignored.\n");
+
     xf86DrvMsgVerb(scrnIndex, X_INFO, DefaultLevel, "==RDCScreenInit() Normal Exit==\n");
     return TRUE;
 } 
@@ -1806,6 +1818,17 @@ RDCValidMode(ScrnInfoPtr pScrn, DisplayModePtr mode, Bool verbose, int flags)
         }
         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "== RDCValidMode() Fail, Not Interlace Mode==\n");
         return MODE_NO_INTERLACE;
+    }
+
+    if (mode->VRefresh > 60.5f)
+    {
+        if (verbose)
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_PROBED, InfoLevel,
+                       "==Removing mode \"%s\" (refresh %f Hz > 60 Hz)==\n",
+                       mode->name, mode->VRefresh);
+        }
+        return MODE_BAD;
     }
 
     if (pRDC->DeviceInfo.ucDeviceID == TVIndex) 

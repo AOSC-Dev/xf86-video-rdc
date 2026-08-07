@@ -255,10 +255,10 @@ DisplayModePtr RDCBuildModePool(ScrnInfoPtr pScrn)
         {
             
             
-            if (wVESAModeHorSize > pRDC->ulMaxPitch)
+            if (wVESAModeHorSize <= 1920 && wVESAModeHorSize > pRDC->ulMaxPitch)
                 pRDC->ulMaxPitch = wVESAModeHorSize;
                 
-            if (wVESAModeVerSize > pRDC->ulMaxHeight)
+            if (wVESAModeVerSize <= 1200 && wVESAModeVerSize > pRDC->ulMaxHeight)
                 pRDC->ulMaxHeight = wVESAModeVerSize;
 
             ulModeMemSize = ALIGN_TO_UB_32(pRDC->ulMaxPitch * pCBiosArguments->CL >> 3);
@@ -417,6 +417,35 @@ DisplayModePtr RDCBuildModePool(ScrnInfoPtr pScrn)
     
     
        
+    /* M2012/M2015 documentation: maximum resolution is 1920x1200 and only
+     * refresh rates up to 60Hz are supported. Also adapt the available
+     * resolutions to the actual framebuffer memory size (the currently
+     * allocated video memory minus the reserved buffers). */
+    {
+        int fbpp = (pScrn->bitsPerPixel + 1) / 8;
+        DisplayModePtr p = pModePoolHead, pnext;
+        while (p)
+        {
+            pnext = p->next;
+            if (p->VRefresh > 60.5f ||
+                p->HDisplay > 1920 || p->VDisplay > 1200 ||
+                (ULONG)p->HDisplay * p->VDisplay * fbpp > pRDC->AvailableFBsize)
+            {
+                if (p->prev)
+                    p->prev->next = p->next;
+                else
+                    pModePoolHead = p->next;
+                if (p->next)
+                    p->next->prev = p->prev;
+                if (p->Private)
+                    xfree(p->Private);
+                xfree((void *)p->name);
+                xfree(p);
+            }
+            p = pnext;
+        }
+    }
+
     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Exit RDCBuildModePool()== pModePoolHead = 0x%x\n", pModePoolHead);         
     return pModePoolHead;
 }

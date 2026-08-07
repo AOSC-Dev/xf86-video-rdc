@@ -323,61 +323,64 @@ static int EC_get_port_fd(void)
     return EC_port_fd;
 }
 
+static int EC_read_status(int fd, BYTE *status)
+{
+    if (lseek(fd, 0x66, SEEK_SET) < 0)
+        return 0;
+    return read(fd, status, 1) == 1;
+}
+
+/* Spin on the EC status register without sleeping. ECs respond within a few
+ * microseconds, so a short spin is enough; on systems without an EC the
+ * spin gives up quickly instead of waiting on tick-granularity usleep(). */
+static int EC_wait_ready(int fd, int want_set)
+{
+    int i;
+    BYTE status;
+    for (i = 0; i < 500; i++)
+    {
+        if (!EC_read_status(fd, &status))
+            return 0;
+        if (want_set ? (status & BIT0) : !(status & BIT1))
+            return 1;
+    }
+    return 0;
+}
+
 ULONG EC_ReadPortUchar(BYTE *port, BYTE *value)
 {
-    xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Enter EC_ReadPortUchar()\n");
+    xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Enter EC_ReadPortUchar()\n");
 
     int fd = EC_get_port_fd();
-    BYTE status;
-    int i;
     if (fd < 0)
         return EC_ACCESS_FAIL;
-    for (i=0 ; i<10 ; i++)
-    {
-        usleep(700);
-        
-        if ((lseek(fd, 0x66, SEEK_SET) >= 0) &&
-            (read(fd, &status, 1) == 1) && (status & BIT0))
-        {
-            if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0 &&
-                read(fd, value, 1) == 1)
-                return EC_ACCESS_SUCCESS;
-        }
-    };
+    if (!EC_wait_ready(fd, 1))
+        return EC_ACCESS_FAIL;
+    if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0 &&
+        read(fd, value, 1) == 1)
+        return EC_ACCESS_SUCCESS;
 
-    xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Leave EC_ReadPortUchar()\n");
-    
     return EC_ACCESS_FAIL;
 };
 
 void EC_WritePortUchar(BYTE *port, BYTE data)
 {
-    xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Enter EC_WritePortUchar()\n");
+    xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Enter EC_WritePortUchar()\n");
     
     int fd = EC_get_port_fd();
-    BYTE status;
-    int i;
     if (fd < 0)
         return;
-    for (i=0 ; i<10 ; i++)
-    {
-        usleep(700);
-        
-        if ((lseek(fd, 0x66, SEEK_SET) >= 0) &&
-            (read(fd, &status, 1) == 1) && !(status & BIT1))
-        {
-            if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0)
-                write(fd, &data, 1);
-            break;
-        };
-    };
+    if (!EC_wait_ready(fd, 0))
+        return;
+    if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0)
+        write(fd, &data, 1);
 
-    xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Leave EC_WritePortUchar()\n");
+    xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Leave EC_WritePortUchar()\n");
 };
 
 void EC_DetectCaps(ScrnInfoPtr pScrn, ECINFO* pECChip)
 {
-    xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Enter EC_DetectCaps()\n");
+    xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Enter EC_DetectCaps()\n");
     
     BYTE bP41Level = 0x0, bP80Level = 0x0, bP41temp = 0x0, bP80temp = 0x0;
     ULONG bSuccess = EC_ACCESS_FAIL;
@@ -410,7 +413,7 @@ void EC_DetectCaps(ScrnInfoPtr pScrn, ECINFO* pECChip)
         EC_WritePortUchar((BYTE*)0x62, bP41Level);
         pECChip->bECExist = TRUE;
         pECChip->bNewEC = TRUE;
-        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "RDC: New EC has been detected.\n");
+        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "RDC: New EC has been detected.\n");
     }
     else if(0xD == bP80temp)
     {
@@ -418,16 +421,16 @@ void EC_DetectCaps(ScrnInfoPtr pScrn, ECINFO* pECChip)
         EC_WritePortUchar((BYTE*)0x62, bP80Level);
         pECChip->bECExist = TRUE;
         pECChip->bNewEC = FALSE;
-        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "RDC: Old EC has been detected.\n");
+        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "RDC: Old EC has been detected.\n");
     }
     else
     {
         pECChip->bECExist = FALSE;
         pECChip->bNewEC = FALSE;
-        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "RDC: EC has been NOT detected.\n");
+        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "RDC: EC has been NOT detected.\n");
     }
 
-    xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Leave EC_DetectCaps()\n");            
+    xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Leave EC_DetectCaps()\n");            
     return;
 }
 
