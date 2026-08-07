@@ -9,6 +9,22 @@ The following SoCs passed testing:
 | Vortex86 MX+ | M2012 |
 | Vortex86 DX2 | M2012 |
 
+Resolutions supported by the current driver:
+
+| Resolution | Note |
+| ----- | --- |
+| 640x480 | |
+| 800x600 | |
+| 1024x768 | |
+| 1280x720 | |
+| 1280x1024 | |
+| 1366x768 | |
+| 1440x900 | |
+| 1600x1200 | |
+| 1680x1050 | |
+| 1920x1080 | Requires at least 32 MB of VRAM |
+| 1920x1200 | Requires at least 32 MB of VRAM |
+
 ## Build and Install
 
 ```bash
