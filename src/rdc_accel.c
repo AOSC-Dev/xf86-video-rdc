@@ -2395,7 +2395,7 @@ RDCExaPrepareCopy( PixmapPtr pSrcPixmap,
 
     if (pSrcPixmap->drawable.bitsPerPixel != pDstPixmap->drawable.bitsPerPixel)
     {
-        xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Exit RDCExaPrepareCopy Color depth mismatch==\n");
+        xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Exit RDCExaPrepareCopy Color depth mismatch==\n");
         return FALSE;
     }
     
@@ -2431,8 +2431,8 @@ RDCExaPrepareCopy( PixmapPtr pSrcPixmap,
     ModeMask = (1 << ((1 << ModeMaskShift) << 3)) - 1;
     if (planeMask != ModeMask)
     {
-        xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Exit RDCExaPrepareCopy Mask mismatch==\n");
-        xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==planeMask = 0x%x; ModeMask = 0x%x==\n",planeMask, ModeMask);
+        xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Exit RDCExaPrepareCopy Mask mismatch==\n");
+        xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==planeMask = 0x%x; ModeMask = 0x%x==\n",planeMask, ModeMask);
         return FALSE;
     }
     
@@ -2534,7 +2534,7 @@ RDCExaCopy( PixmapPtr pDstPixmap,
 static void
 RDCExaDoneCopy(PixmapPtr pPixmap)
 {
-    xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==RDCExaDoneCopy==\n");
+    xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==RDCExaDoneCopy==\n");
 }
 
 
@@ -2555,7 +2555,7 @@ Bool RDCExaUploadToScreen ( PixmapPtr   pDst,
     
     if (!w || !h)
     {
-        xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Exit RDCExaUploadToScreen width or height = 0==\n");
+        xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Exit RDCExaUploadToScreen width or height = 0==\n");
 	    return TRUE;
 	}
 	
@@ -2591,7 +2591,7 @@ Bool RDCExaDownloadFromScreen (PixmapPtr pSrc,
     
     if (!w || !h)
     {
-        xf86DrvMsgVerb(0, X_INFO, ErrorLevel, "==Exit RDCExaDownloadFromScreen width or height = 0==\n");
+        xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Exit RDCExaDownloadFromScreen width or height = 0==\n");
         return TRUE;
     }
  

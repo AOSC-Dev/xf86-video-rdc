@@ -1343,7 +1343,57 @@ RDCScreenInit(ScreenPtr pScreen, int argc, char **argv)
     pScrn = xf86Screens[pScreen->myNum];
     pRDC = RDCPTR(pScrn);
     hwp = VGAHWPTR(pScrn);
-      
+    if (!hwp)
+    {
+        /* On a server screen re-init (e.g. after logout the display manager
+         * restarts the screen) the vgaHW record may not have been re-set up;
+         * allocate it here so vgaHWGetIOBase() does not crash. */
+        if (!vgaHWGetHWRec(pScrn))
+        {
+            xf86DrvMsg(scrnIndex, X_ERROR, "vgaHWGetHWRec() failed in RDCScreenInit\n");
+            return FALSE;
+        }
+        hwp = VGAHWPTR(pScrn);
+    }
+
+    /* On a server restart (display-manager screen re-init after logout)
+     * PreInit is not re-run, so the MMIO/FB/VBIOS mappings torn down by the
+     * previous RDCCloseScreen() must be re-established before ScreenInit
+     * touches the hardware, together with the CInt10 pointers that PreInit
+     * normally sets (pjIOAddress / pjROMLinearAddr). */
+    if (!pRDC->MMIOVirtualAddr)
+    {
+        if (!RDCMapMMIO(pScrn))
+        {
+            xf86DrvMsg(scrnIndex, X_ERROR, "RDCMapMMIO() failed in RDCScreenInit\n");
+            return FALSE;
+        }
+        vSetRDCIOBase(pRDC->MMIOVirtualAddr);
+        pRDC->pCBIOSExtension->pjIOAddress = pRDC->MMIOVirtualAddr;
+    }
+    if (!pRDC->FBVirtualAddr)
+    {
+        if (!RDCMapMem(pScrn))
+        {
+            xf86DrvMsg(scrnIndex, X_ERROR, "RDCMapMem() failed in RDCScreenInit\n");
+            return FALSE;
+        }
+        pRDC->pCBIOSExtension->pVideoVirtualAddress = (ULONG *)(pRDC->FBVirtualAddr);
+    }
+    if (!pRDC->BIOSVirtualAddr)
+    {
+        pRDC->ulROMType = 0;    /* force re-read of the VBIOS */
+        if (!RDCMapVBIOS(pScrn))
+        {
+            xf86DrvMsg(scrnIndex, X_ERROR, "RDCMapVBIOS() failed in RDCScreenInit\n");
+            return FALSE;
+        }
+        pRDC->pCBIOSExtension->pjROMLinearAddr = pRDC->BIOSVirtualAddr;
+        /* Re-parse the ROM so the CInt10 table pointers (port config, LCD,
+         * HDMI ...) are re-pointed at the newly loaded ROM buffer instead
+         * of the buffer freed by the previous session's RDCUnmapVBIOS(). */
+        CBIOSInitialDataFromVBIOS(pRDC->pCBIOSExtension);
+    }
     
     AvailFBSize = pRDC->AvailableFBsize;
     
@@ -1382,8 +1432,11 @@ RDCScreenInit(ScreenPtr pScreen, int argc, char **argv)
         return FALSE;
     }      
 
-    vgaHWSetMmioFuncs(hwp, pRDC->MMIOVirtualAddr, 0);
-    vgaHWGetIOBase(hwp);
+    if (hwp)
+    {
+        vgaHWSetMmioFuncs(hwp, pRDC->MMIOVirtualAddr, 0);
+        vgaHWGetIOBase(hwp);
+    }
  
     vFillRDCModeInfo (pScrn);      
  
@@ -1758,14 +1811,15 @@ RDCLeaveVT(ScrnInfoPtr pScrn)
     
     if (pRDC->bRandRRotation)
         *(ULONG *)(pRDC->MMIOVirtualAddr + 0x8094) = 0x0;
-
-
     if (pRDC->pVbe && VBESetVBEMode(pRDC->pVbe, 3, NULL) == FALSE)
     {
         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==RDCVBESetMode() Fail\n");
     }
     
-    vgaHWLock(hwp);
+    if (hwp)
+        vgaHWLock(hwp);
+    
+         
     
     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Exit RDCLeaveVT() Normal Exit== \n");
 }
@@ -1982,7 +2036,8 @@ RDCCloseScreen(ScreenPtr pScreen)
             return FALSE;
         }
         
-        vgaHWLock(hwp);
+        if (hwp)
+            vgaHWLock(hwp);
 
     }
 
@@ -2365,7 +2420,8 @@ RDCModeInit(ScrnInfoPtr pScrn, DisplayModePtr mode)
         pRDC->CMDQInfo.Disable2D(pRDC);
 
     
-    vgaHWUnlock(hwp);
+    if (hwp)
+        vgaHWUnlock(hwp);
 
     if (!vgaHWInit(pScrn, mode))
     {
@@ -2436,25 +2492,34 @@ RDCModeInit(ScrnInfoPtr pScrn, DisplayModePtr mode)
                     {
                         pRDC->DeviceInfo.ScalerConfig.EnableHorDownScaler = TRUE;
 
-                        if ((ULONG)mode->HDisplay > 1024)
-                            pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (1024 << 8) / pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution;
-                        else
-                            pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (((ULONG)mode->HDisplay) << 8) / pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution;
+                        if (pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution > 0)
+                        {
+                            if ((ULONG)mode->HDisplay > 1024)
+                                pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (1024 << 8) / pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution;
+                            else
+                                pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (((ULONG)mode->HDisplay) << 8) / pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution;
                             
-                        pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor++;
+                            pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor++;
+                        }
                     }
                 }
             }
             else if (pRDC->DeviceInfo.ucDeviceID == CRTIndex &&
                      pRDC->pCBIOSExtension->bEDIDValid)
             {
-                pRDC->DeviceInfo.ScalerConfig.EnableHorUpScaler = TRUE;
-                pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (((ULONG)mode->HDisplay) << 12) / pRDC->pCBIOSExtension->wCRTDefaultH;
+                if (pRDC->pCBIOSExtension->wCRTDefaultH > 0)
+                {
+                    pRDC->DeviceInfo.ScalerConfig.EnableHorUpScaler = TRUE;
+                    pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (((ULONG)mode->HDisplay) << 12) / pRDC->pCBIOSExtension->wCRTDefaultH;
+                }
             }
             else if ((ULONG)mode->HDisplay < pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution)
             {
-                pRDC->DeviceInfo.ScalerConfig.EnableHorUpScaler = TRUE;
-                pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (((ULONG)mode->HDisplay) << 12) / pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution;
+                if (pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution > 0)
+                {
+                    pRDC->DeviceInfo.ScalerConfig.EnableHorUpScaler = TRUE;
+                    pRDC->DeviceInfo.ScalerConfig.ulHorScalingFactor = (((ULONG)mode->HDisplay) << 12) / pRDC->DeviceInfo.MonitorSize.ulHorMaxResolution;
+                }
             }
         }
 
@@ -2468,25 +2533,34 @@ RDCModeInit(ScrnInfoPtr pScrn, DisplayModePtr mode)
                     {
                         pRDC->DeviceInfo.ScalerConfig.EnableVerDownScaler = TRUE;
 
-                        if ((ULONG)mode->VDisplay > 768)
-                            pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor = (768 << 8) / pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution;
-                        else
-                            pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor = (((ULONG)mode->VDisplay) << 8) / pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution;
+                        if (pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution > 0)
+                        {
+                            if ((ULONG)mode->VDisplay > 768)
+                                pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor = (768 << 8) / pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution;
+                            else
+                                pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor = (((ULONG)mode->VDisplay) << 8) / pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution;
                             
-                        pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor++;
+                            pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor++;
+                        }
                     }
                 }
             }
             else if (pRDC->DeviceInfo.ucDeviceID == CRTIndex &&
                      pRDC->pCBIOSExtension->bEDIDValid)
             {
-                pRDC->DeviceInfo.ScalerConfig.EnableVerUpScaler = TRUE;
-                pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor =  (((ULONG)mode->VDisplay) << 11) / pRDC->pCBIOSExtension->wCRTDefaultV;
+                if (pRDC->pCBIOSExtension->wCRTDefaultV > 0)
+                {
+                    pRDC->DeviceInfo.ScalerConfig.EnableVerUpScaler = TRUE;
+                    pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor =  (((ULONG)mode->VDisplay) << 11) / pRDC->pCBIOSExtension->wCRTDefaultV;
+                }
             }
             else if ((ULONG)mode->VDisplay < pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution)
             {
-                pRDC->DeviceInfo.ScalerConfig.EnableVerUpScaler = TRUE;
-                pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor =  (((ULONG)mode->VDisplay) << 11) /pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution;
+                if (pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution > 0)
+                {
+                    pRDC->DeviceInfo.ScalerConfig.EnableVerUpScaler = TRUE;
+                    pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor =  (((ULONG)mode->VDisplay) << 11) /pRDC->DeviceInfo.MonitorSize.ulVerMaxResolution;
+                }
             }
         }
     }
