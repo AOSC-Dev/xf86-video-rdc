@@ -238,7 +238,7 @@ RDCSetCursorPosition(ScrnInfoPtr pScrn, int x, int y)
     if (pRDC->DeviceInfo.ScalerConfig.EnableVerScaler)
     {
         y = (y * pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor + 2048) >> 11;
-        y_end = y + (((MAX_HWC_HEIGHT - y_offset) * pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor + 2048) >> 11) - 1;
+        y_end = y + (((MAX_HWC_HEIGHT - y_offset) * pRDC->DeviceInfo.ScalerConfig.ulVerScalingFactor + 2047) >> 11) - 1;
     }
 
     if(mode->Flags & V_DBLSCAN)

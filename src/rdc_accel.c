@@ -2632,7 +2632,7 @@ static ExaDriverPtr RDCInitExa(ScreenPtr pScreen)
     pExa->offScreenBase = pScrn->virtualY * pRDC->VideoModeInfo.ScreenPitch;
     pExa->pixmapOffsetAlign = 32;
     pExa->pixmapPitchAlign = 16;
-    pExa->flags = EXA_OFFSCREEN_PIXMAPS ;
+    pExa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_OFFSCREEN_ALIGN_POT;
     pExa->maxX = 2047;
     pExa->maxY = 2047;
     pExa->maxPitchBytes= 8188;
