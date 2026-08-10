@@ -2,6 +2,10 @@
 
 X.Org driver for RDC Semiconductor's GPU IPs (M2012/M2015) in Vortex86 Series.
 
+> This driver is a part of [Afterglow](https://aosc.io/download#afterglow-download) project (formerly known as AOSC OS/Retro)
+
+This driver is based on the official `M2015 Xorg Driver R0.0.1` (with GPLv3 License) and `M2012 Xorg Driver T0.0.9_1` (with MIT License).
+
 The following SoCs passed testing:
 
 | SoC | GPU IP |
@@ -24,6 +28,8 @@ Resolutions supported by the current driver:
 | 1680x1050 | |
 | 1920x1080 | Requires at least 32 MB of VRAM |
 | 1920x1200 | Requires at least 32 MB of VRAM |
+
+**This driver doesn't support the official `VGAUtility` tool.** (It's too old)
 
 ## Build and Install
 

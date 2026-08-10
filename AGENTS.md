@@ -5,6 +5,7 @@
 `xf86-video-rdc` — X.Org DDX driver for RDC Semiconductor GPU IPs (**M2012**, **M2015**) found in the Vortex86 SoC family.
 
 - **Driver name**: `rdcm15` → module `rdcm15_drv.so` (entry symbol `rdcm15ModuleData`).
+- **Based driver**: The official `M2015 Xorg Driver R0.0.1` and `M2012 Xorg Driver T0.0.9_1`
 - **Target platform**: 32-bit i586 (Vortex86), Xorg ≥ 1.13 (developed/tested on Xorg 21.1). Old Xorg (≤1.7) and XAA are **not** supported.
 - **Chipsets**: M2010_A0, M2010, M2011, M2012, M2013, M2014, M2015, M2200. M2012/M2015 are single-display; the `rdcdual_*` dual-CRTC path is only built for ancient Xorg (`HAVE_DUAL`) and is effectively dead on modern servers.
 
