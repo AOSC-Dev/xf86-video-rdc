@@ -256,7 +256,7 @@ Bool RDCMapVBIOS(ScrnInfoPtr pScrn)
         fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
         if (!fpVBIOS)
         {
-            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\" not found()==\n");
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/M2012-0.0.8.rom\" not found()==\n");
         }
         else
         {

@@ -266,7 +266,7 @@ typedef enum _CHIP_ID {
 #define  CR_VIDEO_IDLE               BIT14
 #define  CR_CR_IDLE                  BIT15
 
-#define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//RDCVBIOS.ROM"
+#define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom"
 #define BIOS_ROM_SIZE           32*1024
 #define BIOS_ROM_PHY_BASE       0xC0000
 

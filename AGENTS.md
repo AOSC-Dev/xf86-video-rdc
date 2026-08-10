@@ -69,7 +69,8 @@ Build prerequisites: `pkg-config`, autoconf/automake/libtool, `xorg-server` (dev
 | `rdcdual_driver.c`, `rdcdual_display.c` | Dual-display path (HAVE_DUAL only, dead on modern Xorg) |
 | `BiosDef.h` | Type typedefs (ULONG/DWORD 32-bit) |
 | `misc/00-rdc.conf` | Shipped xorg.conf.d snippet (`Driver "rdcm15"`) |
-| `misc/RDCVBIOS.ROM` | VBIOS dump for the file fallback |
+| `misc/M2012-0.0.4.rom` | VBIOS dump for the file fallback (Version 0.0.4) |
+| `misc/M2012-0.0.8.rom` | VBIOS dump for the file fallback (Version 0.0.8) and default |
 
 ## Verification
 

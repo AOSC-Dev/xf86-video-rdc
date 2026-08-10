@@ -21,7 +21,7 @@
 AUTOMAKE_OPTIONS = foreign
 SUBDIRS = src
 
-EXTRA_DIST = misc/RDCVBIOS.ROM misc/00-rdc.conf
+EXTRA_DIST = misc/M2012-0.0.8.rom misc/00-rdc.conf
 
 # Xorg reads user config snippets from /etc/X11/xorg.conf.d regardless of the
 # build's sysconfdir (e.g. AOSC uses /usr/etc but Xorg still reads /etc).
@@ -29,7 +29,7 @@ XORG_CONFIG_DIR = /etc/X11/xorg.conf.d
 
 install-data-local:
 	$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers
-	$(INSTALL_DATA) $(srcdir)/misc/RDCVBIOS.ROM $(DESTDIR)$(moduledir)/drivers/RDCVBIOS.ROM
+	$(INSTALL_DATA) $(srcdir)/misc/M2012-0.0.8.rom $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
 	@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \
 		echo "  Installing xorg.conf.d/00-rdc.conf to $(XORG_CONFIG_DIR)"; \
 		$(MKDIR_P) $(DESTDIR)$(XORG_CONFIG_DIR); \
@@ -39,7 +39,7 @@ install-data-local:
 	fi
 
 uninstall-local:
-	rm -f $(DESTDIR)$(moduledir)/drivers/RDCVBIOS.ROM
+	rm -f $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
 	rm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf
 
 clean-local:
