@@ -232,7 +232,7 @@ typedef enum _CHIP_ID {
 } CHIP_ID;
 
 
-#define RDC_NAME                "RDC GFX R0.1.0"
+#define RDC_NAME                "RDC GFX R0.1.1"
 #define RDC_DRIVER_NAME         "rdcm15"
 #define RDC_MAJOR_VERSION       0
 #define RDC_MINOR_VERSION       0
