@@ -168,7 +168,8 @@ typedef enum {
     OPTION_HRATIO,
     OPTION_VRATIO,
     OPTION_RANDRROTATION,    
-    OPTION_DOWN_SCALE
+    OPTION_DOWN_SCALE,
+    OPTION_DEFAULT_MODE
 } RDCOpts;
 
 static const OptionInfoRec RDCOptions[] = {
@@ -183,6 +184,7 @@ static const OptionInfoRec RDCOptions[] = {
     {OPTION_VRATIO,         "VRatio",         OPTV_INTEGER,    {0},    FALSE},    
     {OPTION_RANDRROTATION, "RandRRotation", OPTV_BOOLEAN,  {0}, FALSE},
     {OPTION_DOWN_SCALE,    "DownScale",     OPTV_BOOLEAN,  {0}, FALSE},
+    {OPTION_DEFAULT_MODE,  "DefaultMode",   OPTV_STRING,   {0}, FALSE},
     {-1,                   NULL,            OPTV_NONE,     {0}, FALSE}
 };
 
@@ -763,6 +765,13 @@ struct _RDCRec
     ScreenBlockHandlerProcPtr       BlockHandler;
     unsigned int SaveGeneration;
     DWORD              SetVideoDisplay;
+
+    
+    Bool                bEDIDValid;         
+    USHORT              usEDIDNativeH;      
+    USHORT              usEDIDNativeV;      
+    USHORT              usEDIDMaxH;         
+    USHORT              usEDIDMaxV;         
 };
 
 
@@ -869,6 +878,8 @@ void RDCVideoInit(ScreenPtr pScreen);
 void RDCAllocateVPOSTMem(ScrnInfoPtr pScrn, RDCPortPrivPtr pRDCPortPriv, long width, long height, Bool bRDC_Video);
 Bool RDCSetMode(ScrnInfoPtr pScrn, DisplayModePtr mode);
 DisplayModePtr RDCBuildModePool(ScrnInfoPtr pScrn);
+Bool RDCReadEDID(ScrnInfoPtr pScrn);
+void RDCSelectInitialMode(ScrnInfoPtr pScrn);
 
 
 #endif

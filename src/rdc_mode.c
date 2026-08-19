@@ -56,6 +56,8 @@
 #include "rdc.h"
 #include "rdc_mode.h"
 
+#include <string.h>
+
 RRateInfo RefreshRateMap[] = { {60.0f,  FALSE, 0},
                                {50.0f,  TRUE,  1},
                                {50.0f,  FALSE, 3},
@@ -544,4 +546,350 @@ DisplayModePtr SearchDisplayModeRecPtr(DisplayModePtr pModePoolHead, CBIOS_ARGUM
     }
     xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Exit2 SearchDisplayModeRecPtr()== \n");
     return NULL;
+}
+
+/* EDID header: 00 FF FF FF FF FF FF 00 */
+static const BYTE RDCEDIDHeader[8] =
+    { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+
+/* Established timing bits (EDID bytes 35-37, MSB first) and their sizes. */
+static const USHORT RDCEstablishedH[] = {
+    720, 720, 640, 640, 640, 640, 800, 800,
+    800, 800, 832, 1024, 1024, 1024, 1024, 1280
+};
+static const USHORT RDCEstablishedV[] = {
+    400, 400, 480, 480, 480, 480, 600, 600,
+    600, 600, 624, 768, 768, 768, 768, 1024
+};
+
+static Bool RDCParseEDID(BYTE *ucEDID, USHORT *pusNativeH, USHORT *pusNativeV,
+                         USHORT *pusMaxH, USHORT *pusMaxV)
+{
+    USHORT usH, usV, usPClock;
+    int i;
+    BYTE *dtd;
+
+    *pusNativeH = *pusNativeV = *pusMaxH = *pusMaxV = 0;
+
+    /* Detailed timing descriptors at offset 54, 18 bytes each.  The first
+     * usable one is the monitor's preferred (native) mode. */
+    for (i = 0; i < 4; i++)
+    {
+        dtd = ucEDID + 54 + i * 18;
+        usPClock = dtd[0] | (dtd[1] << 8);
+        if (usPClock == 0)
+            continue;   /* monitor descriptor, not a timing */
+        usH = (dtd[2] | ((dtd[4] & 0xF0) << 4)) + 1;
+        usV = (dtd[5] | ((dtd[7] & 0xF0) << 4)) + 1;
+        if (usH < 320 || usV < 240 || usH > 4096 || usV > 4096)
+            continue;
+        if (*pusNativeH == 0)
+        {
+            *pusNativeH = usH;
+            *pusNativeV = usV;
+        }
+        if (usH > *pusMaxH) *pusMaxH = usH;
+        if (usV > *pusMaxV) *pusMaxV = usV;
+    }
+
+    /* Standard timings at offset 38, 8 entries of 2 bytes. */
+    for (i = 0; i < 8; i++)
+    {
+        BYTE b0 = ucEDID[38 + i * 2], b1 = ucEDID[39 + i * 2];
+
+        if ((b0 == 0x01 && b1 == 0x01) || b0 == 0 || b1 == 0)
+            continue;   /* unused entry */
+        usH = (b0 + 31) * 8;
+        switch (b1 >> 6)
+        {
+        case 0:  usV = usH * 10 / 16; break;   /* 16:10 */
+        case 1:  usV = usH * 3 / 4;  break;    /* 4:3 */
+        case 2:  usV = usH * 4 / 5;  break;    /* 5:4 */
+        default: usV = usH * 9 / 16; break;    /* 16:9 */
+        }
+        if (usH < 320 || usV < 240)
+            continue;
+        if (usH > *pusMaxH) *pusMaxH = usH;
+        if (usV > *pusMaxV) *pusMaxV = usV;
+    }
+
+    /* Established timings (VGA-safe modes) from bytes 35-37. */
+    for (i = 0; i < 16; i++)
+    {
+        if (ucEDID[35 + i / 8] & (0x80 >> (i % 8)))
+        {
+            if (RDCEstablishedH[i] > *pusMaxH) *pusMaxH = RDCEstablishedH[i];
+            if (RDCEstablishedV[i] > *pusMaxV) *pusMaxV = RDCEstablishedV[i];
+        }
+    }
+
+    if (*pusMaxH == 0 || *pusMaxV == 0)
+        return FALSE;
+
+    if (*pusNativeH == 0)
+    {
+        *pusNativeH = *pusMaxH;
+        *pusNativeV = *pusMaxV;
+    }
+    return TRUE;
+}
+
+Bool RDCReadEDID(ScrnInfoPtr pScrn)
+{
+    RDCRecPtr pRDC = RDCPTR(pScrn);
+    CBIOS_ARGUMENTS *pCBiosArguments = pRDC->pCBIOSExtension->pCBiosArguments;
+    BYTE ucEDID[128];
+    BYTE ucI2CPort = 0, ucI2CAddr = 0;
+    BYTE ucDeviceID;
+    EDID_DETAILED_TIMING EDIDDetailedTimingList;
+    ULONG ulChecksum = 0;
+    int i, j;
+    Bool bValid = FALSE;
+
+    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Enter RDCReadEDID()== \n");
+
+    pRDC->bEDIDValid = FALSE;
+
+    /* Unlock the extended CRTC registers and put the I2C buses into their
+     * default state before bit-banging the DDC lines. */
+    vRDCOpenKey(pScrn);
+    CBIOSInitialI2CReg();
+
+    /* The currently active display device determines the DDC port to use. */
+    memset(pCBiosArguments, 0, sizeof(CBIOS_ARGUMENTS));
+    pCBiosArguments->AX = OEMFunction;
+    pCBiosArguments->BX = QueryDisplayPathInfo;
+    CInt10(pRDC->pCBIOSExtension);
+    ucDeviceID = (pCBiosArguments->Ebx & 0x000F0000) >> 16;
+
+    /* Try the active device's DDC port first, then the CRT and HDMI/DVI
+     * ports, so EDID works even when the vbe module is not available. */
+    for (i = 0; i < 3 && !bValid; i++)
+    {
+        switch (i)
+        {
+        case 0:
+            if (ucDeviceID != CRTIndex && ucDeviceID != HDMIIndex &&
+                ucDeviceID != DVIIndex && ucDeviceID != HDTVIndex)
+                continue;   /* LCD/TV path has no DDC */
+            CBIOSGetDeviceI2CInformation(ucDeviceID, &ucI2CPort, &ucI2CAddr);
+            break;
+        case 1:
+            CBIOSGetDeviceI2CInformation(CRTIndex, &ucI2CPort, &ucI2CAddr);
+            break;
+        default:
+            CBIOSGetDeviceI2CInformation(HDMIIndex, &ucI2CPort, &ucI2CAddr);
+            break;
+        }
+        if (!ucI2CPort)
+            continue;
+
+        memset(ucEDID, 0, sizeof(ucEDID));
+        for (j = 0; j < 128; j++)
+        {
+            if (CBIOSReadI2C(ucI2CPort, MonitorEDID, (BYTE)j, &ucEDID[j]) != CBIOSI2C_OK)
+                break;
+        }
+        if (j < 128)
+            continue;
+
+        ulChecksum = 0;
+        for (j = 0; j < 128; j++)
+            ulChecksum += ucEDID[j];
+        if ((ulChecksum & 0xFF) != 0)
+            continue;
+
+        if (memcmp(ucEDID, RDCEDIDHeader, sizeof(RDCEDIDHeader)) != 0)
+            continue;
+
+        bValid = TRUE;
+    }
+
+    if (!bValid)
+    {
+        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+                       "==Exit1 RDCReadEDID()== no EDID found== \n");
+        return FALSE;
+    }
+
+    if (!RDCParseEDID(ucEDID, &pRDC->usEDIDNativeH, &pRDC->usEDIDNativeV,
+                      &pRDC->usEDIDMaxH, &pRDC->usEDIDMaxV))
+    {
+        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+                       "==Exit2 RDCReadEDID()== EDID has no usable timings== \n");
+        return FALSE;
+    }
+
+    /* Feed the preferred timing into the emulated VBIOS EDID table, exactly
+     * like the vbe-based DDC path in RDCDoDDC() does.  When bEDIDValid is
+     * set, mode switching programs the exact native timing from the DTD, and
+     * the CRT path uses wCRTDefaultH/V as its scaling target. */
+    memset(&EDIDDetailedTimingList, 0, sizeof(EDIDDetailedTimingList));
+    CreateEDIDDetailedTimingList(ucEDID, sizeof(ucEDID), &EDIDDetailedTimingList);
+    if (EDIDDetailedTimingList.bValid)
+    {
+        CBIOS_SetEDIDToModeTable(pScrn, &EDIDDetailedTimingList);
+        pRDC->pCBIOSExtension->wCRTDefaultH = EDIDDetailedTimingList.usHorDispEnd;
+        pRDC->pCBIOSExtension->wCRTDefaultV = EDIDDetailedTimingList.usVerDispEnd;
+    }
+
+    pRDC->pCBIOSExtension->bEDIDValid = TRUE;
+    pRDC->bEDIDValid = TRUE;
+
+    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel,
+        "RDCReadEDID: native resolution %dx%d, max %dx%d (device 0x%x, DDC port 0x%x)\n",
+        pRDC->usEDIDNativeH, pRDC->usEDIDNativeV,
+        pRDC->usEDIDMaxH, pRDC->usEDIDMaxV, ucDeviceID, ucI2CPort);
+    return TRUE;
+}
+
+static DisplayModePtr RDCFindMode(ScrnInfoPtr pScrn, int H, int V)
+{
+    DisplayModePtr p = pScrn->modes;
+
+    if (!p)
+        return NULL;
+    do {
+        if (p->HDisplay == H && p->VDisplay == V)
+            return p;
+        p = p->next;
+    } while (p && p != pScrn->modes);
+    return NULL;
+}
+
+static void RDCSetPreferredMode(ScrnInfoPtr pScrn, DisplayModePtr m)
+{
+    DisplayModePtr head;
+
+    if (!m)
+        return;
+    m->type |= M_T_PREFERRED;
+    if (m == pScrn->modes)
+        return;
+
+    head = pScrn->modes;
+    /* unlink m from the circular list */
+    m->prev->next = m->next;
+    m->next->prev = m->prev;
+    /* splice m in front of the head */
+    m->prev = head->prev;
+    m->next = head;
+    head->prev->next = m;
+    head->prev = m;
+    pScrn->modes = m;
+}
+
+static void RDCPruneModes(ScrnInfoPtr pScrn, int maxH, int maxV)
+{
+    DisplayModePtr p, pnext;
+    int n = 0, orig, i;
+
+    for (p = pScrn->modes; p; p = p->next)
+    {
+        n++;
+        if (p->next == pScrn->modes)
+            break;
+    }
+    if (n == 0)
+        return;
+    orig = n;
+
+    p = pScrn->modes;
+    for (i = 0; i < orig && p; i++)
+    {
+        pnext = p->next;
+        if ((p->HDisplay > maxH || p->VDisplay > maxV) && n > 1)
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_PROBED, InfoLevel,
+                           "Removing mode \"%s\" (larger than monitor's %dx%d)\n",
+                           p->name ? p->name : "", maxH, maxV);
+            if (pScrn->modes == p)
+                pScrn->modes = pnext;
+            p->prev->next = p->next;
+            p->next->prev = p->prev;
+            if (p->Private)
+                xfree(p->Private);
+            xfree((void *)p->name);
+            xfree(p);
+            n--;
+        }
+        p = pnext;
+    }
+}
+
+void RDCSelectInitialMode(ScrnInfoPtr pScrn)
+{
+    RDCRecPtr pRDC = RDCPTR(pScrn);
+    DisplayModePtr m = NULL, p;
+    char *s = NULL;
+
+    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Enter RDCSelectInitialMode()== \n");
+
+    if (!pScrn->modes)
+        return;
+
+    /* 1. Option "DefaultMode" pins the initial/preferred mode explicitly. */
+    s = (char *)xf86GetOptValString(pRDC->Options, OPTION_DEFAULT_MODE);
+    if (s)
+    {
+        for (p = pScrn->modes; p; p = p->next)
+        {
+            if (p->name && !strcmp(p->name, s))
+            {
+                m = p;
+                break;
+            }
+            if (p->next == pScrn->modes)
+                break;
+        }
+        if (m)
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+                "RDCSelectInitialMode: using configured default mode \"%s\"\n", s);
+            RDCSetPreferredMode(pScrn, m);
+            goto exit;
+        }
+        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+            "RDCSelectInitialMode: configured default mode \"%s\" not available, ignoring\n", s);
+    }
+
+    if (pRDC->bEDIDValid)
+    {
+        /* 2. EDID is available: start at the monitor's native resolution and
+         *    drop modes it cannot physically display. */
+        m = RDCFindMode(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);
+        if (!m)
+            m = RDCFindMode(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);
+        if (m)
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+                "RDCSelectInitialMode: using EDID native mode \"%s\"\n", m->name);
+            RDCSetPreferredMode(pScrn, m);
+        }
+        RDCPruneModes(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);
+    }
+    else
+    {
+        /* 3. No EDID: pick a safe resolution instead of the maximum, so the
+         *    display is not driven out of range on every server start. */
+        for (p = pScrn->modes; p; p = p->next)
+        {
+            if (p->HDisplay <= 1024 && p->VDisplay <= 768)
+            {
+                if (!m || (p->HDisplay * p->VDisplay > m->HDisplay * m->VDisplay))
+                    m = p;
+            }
+            if (p->next == pScrn->modes)
+                break;
+        }
+        if (m)
+        {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+                "RDCSelectInitialMode: no EDID, using safe default mode \"%s\"\n", m->name);
+            RDCSetPreferredMode(pScrn, m);
+        }
+    }
+
+exit:
+    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Exit RDCSelectInitialMode()== \n");
 }

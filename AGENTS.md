@@ -46,6 +46,7 @@ Build prerequisites: `pkg-config`, autoconf/automake/libtool, `xorg-server` (dev
 - **`xalloc`/`xfree`/`xcalloc`/`xrealloc` are compatibility macros** over malloc/free (modern Xorg removed them).
 - **EXA is the only accel path.** `HAVE_XAA` is off; PreInit auto-switches `useEXA=TRUE` and loads the `exa` module, else falls back to `noAccel`. `fb`/`vbe`/`xaa`/`ramdac` module loads are non-fatal where built-in/absent.
 - **Mode pool rules** (`RDCBuildModePool`, `RDCValidMode`): max resolution 1920x1200, refresh ≤ 60 Hz only, and only modes that fit `AvailableFBsize` are offered. `xorg.conf` must NOT force `Virtual` larger than the largest fitting mode.
+- **Initial mode must not be the GPU maximum.** PreInit calls `RDCReadEDID()` (driver-native I2C/DDC read, independent of the `vbe` module) before building the mode pool, then `RDCSelectInitialMode()` reorders `pScrn->modes` after validation so the server starts at the monitor's EDID native resolution (modes larger than the EDID max are dropped). Without EDID a safe mode (largest ≤ 1024x768) is used; `Option "DefaultMode" "1366x768"` pins it explicitly. Keep `bEDIDValid`/`usEDIDNativeH/V`/`usEDIDMaxH/V` (RDCRec) in sync with `pCBIOSExtension->bEDIDValid`/`wCRTDefaultH/V`.
 - **`RDCScreenInit` self-heals after logout/DM screen re-init** (PreInit is not re-run on that path). At the top of `RDCScreenInit`, if `MMIOVirtualAddr`/`FBVirtualAddr`/`BIOSVirtualAddr` are NULL (torn down by `RDCCloseScreen`), it must re-map them AND restore every PreInit-set CInt10 pointer:
   - `pjIOAddress` = new `MMIOVirtualAddr`
   - `pjROMLinearAddr` = new `BIOSVirtualAddr` (also reset `ulROMType = 0` so `RDCMapVBIOS` re-reads, then re-run `CBIOSInitialDataFromVBIOS`)
@@ -58,7 +59,7 @@ Build prerequisites: `pkg-config`, autoconf/automake/libtool, `xorg-server` (dev
 | File | Role |
 |---|---|
 | `rdc_driver.c` | Probe, PreInit/ScreenInit, callbacks, mode set orchestration, CInt10 glue |
-| `rdc_mode.c` | Mode pool build/filter, `RDCSetMode` |
+| `rdc_mode.c` | Mode pool build/filter, `RDCSetMode`, `RDCReadEDID`, `RDCSelectInitialMode` |
 | `rdc_tool.c` | MMIO/FB/VBIOS map & unmap, EC access (/dev/port) |
 | `rdc_vgatool.c` | Low-level MMIO port I/O helpers (GetReg/SetReg/…), palette |
 | `CInt10.c` / `HDMI.c` / `TV.c` | VBIOS emulation (ROM tables, PLL, encoders) |
@@ -75,12 +76,12 @@ Build prerequisites: `pkg-config`, autoconf/automake/libtool, `xorg-server` (dev
 ## Verification
 
 - Build: zero errors/warnings on `make`.
-- On-target (i586): `Xorg -logfile /var/log/Xorg.0.log`; expected log markers: `LoadModule: "rdcm15"`, `Matched rdcm15`, `Video Memory Size=`, mode pool entries, `[EXA] Enabled EXA acceleration.`, `CBIOS: Setting ... resolution`.
+- On-target (i586): `Xorg -logfile /var/log/Xorg.0.log`; expected log markers: `LoadModule: "rdcm15"`, `Matched rdcm15`, `Video Memory Size=`, mode pool entries, `RDCReadEDID: native resolution ...` (only when DDC works), `[EXA] Enabled EXA acceleration.`, `CBIOS: Setting ... resolution`.
 - Test logout/relogin in the DE repeatedly — this exercises the re-init self-healing path and is the main regression surface.
 - `xrandr` should list modes ≤ 1920x1200 at ≤ 60 Hz only.
 
 ## Known limitations
 
 - 2D acceleration only; no 3D/OpenGL hardware support (GLX warnings like AIGLX `swrast_dri.so` are expected).
-- VBE module may be absent (`pVbe` is NULL-guarded; DDC/EDID then unavailable).
+- The `vbe` module may be absent (`pVbe` is NULL-guarded). DDC/EDID then comes from the driver's own `RDCReadEDID()` I2C path instead; if that also fails, EDID is unavailable and the initial mode falls back to a safe default (largest ≤ 1024x768) rather than the GPU maximum.
 - `FireCRCMDQ` ioctl path assumes the RDC kernel CR driver (inactive without it).

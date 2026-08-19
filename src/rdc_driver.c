@@ -1103,6 +1103,14 @@ RDCPreInit(ScrnInfoPtr pScrn, int flags)
     pScrn->fbOffset = 0;
 
     
+    /* Read the EDID directly through the driver's own I2C path so DDC works
+     * even when the vbe module is unavailable.  This must run before
+     * RDCBuildModePool() so the preferred timing can be injected into the
+     * emulated VBIOS EDID table. */
+    if (!xf86ReturnOptValBool(pRDC->Options, OPTION_NO_DDC, FALSE))
+        RDCReadEDID(pScrn);
+
+    
     pScrn->monitor->DDC = RDCDoDDC(pScrn, pRDC->pEnt->index);    
 
 
@@ -1182,6 +1190,11 @@ RDCPreInit(ScrnInfoPtr pScrn, int flags)
     }
 
     xf86SetCrtcForModes(pScrn, INTERLACE_HALVE_V);
+
+    /* Order pScrn->modes so the initial mode is the monitor's native
+     * resolution (from EDID) instead of the GPU's maximum.  Without EDID a
+     * safe resolution is used, and Option "DefaultMode" always wins. */
+    RDCSelectInitialMode(pScrn);
  
     pScrn->currentMode = pScrn->modes;
  
@@ -2209,8 +2222,9 @@ RDCDoDDC(ScrnInfoPtr pScrn, int index)
     }
     else
     {
-        xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel,
-          "this driver cannot do DDC without VBE\n");
+        if (!pRDC->bEDIDValid)
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel,
+              "this driver cannot do DDC without VBE\n");
     }
     
     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Exit2 RDCDoDDC()== return (MonInfo)\n");
