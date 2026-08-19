@@ -757,6 +757,60 @@ static DisplayModePtr RDCFindMode(ScrnInfoPtr pScrn, int H, int V)
     return NULL;
 }
 
+/* Exact match first; otherwise the largest mode that fits inside the target
+ * size.  Some monitors encode the DTD active pixels without the spec's -1,
+ * so the parsed native size can be off by one (e.g. 1281x1025 for a
+ * 1280x1024 panel); this keeps the initial mode from falling back to the
+ * GPU maximum in that case. */
+static DisplayModePtr RDCFindModeBest(ScrnInfoPtr pScrn, int H, int V)
+{
+    DisplayModePtr m, best = NULL;
+
+    m = RDCFindMode(pScrn, H, V);
+    if (m)
+        return m;
+
+    for (m = pScrn->modes; m; m = m->next)
+    {
+        if (m->HDisplay <= H && m->VDisplay <= V)
+        {
+            if (!best || (m->HDisplay * m->VDisplay > best->HDisplay * best->VDisplay))
+                best = m;
+        }
+        if (m->next == pScrn->modes)
+            break;
+    }
+    return best;
+}
+
+/* Resize the virtual framebuffer to the largest mode that remains in the
+ * list.  xf86ValidateModes sized it from the first (largest) requested mode
+ * before EDID pruning ran, so without this the RandR screen size stays at
+ * the GPU maximum (e.g. 1920x1200) and the DE reports it as "current". */
+static void RDCShrinkVirtualSize(ScrnInfoPtr pScrn)
+{
+    DisplayModePtr p = pScrn->modes, largest = NULL;
+
+    if (!p)
+        return;
+    do {
+        if (!largest || (p->HDisplay * p->VDisplay > largest->HDisplay * largest->VDisplay))
+            largest = p;
+        p = p->next;
+    } while (p && p != pScrn->modes);
+
+    if (!largest)
+        return;
+    if (pScrn->xInc <= 0)
+        pScrn->xInc = 8;
+    pScrn->virtualX = ((largest->HDisplay + pScrn->xInc - 1) / pScrn->xInc) * pScrn->xInc;
+    pScrn->virtualY = largest->VDisplay;
+    pScrn->displayWidth = pScrn->virtualX;
+    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+        "RDCShrinkVirtualSize: virtual size %dx%d (pitch %d)\n",
+        pScrn->virtualX, pScrn->virtualY, pScrn->displayWidth);
+}
+
 static void RDCSetPreferredMode(ScrnInfoPtr pScrn, DisplayModePtr m)
 {
     DisplayModePtr head;
@@ -857,9 +911,9 @@ void RDCSelectInitialMode(ScrnInfoPtr pScrn)
     {
         /* 2. EDID is available: start at the monitor's native resolution and
          *    drop modes it cannot physically display. */
-        m = RDCFindMode(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);
+        m = RDCFindModeBest(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);
         if (!m)
-            m = RDCFindMode(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);
+            m = RDCFindModeBest(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);
         if (m)
         {
             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
@@ -889,6 +943,10 @@ void RDCSelectInitialMode(ScrnInfoPtr pScrn)
             RDCSetPreferredMode(pScrn, m);
         }
     }
+
+    /* Keep the virtual framebuffer in sync with the surviving mode list so
+     * the RandR screen size matches what the monitor can display. */
+    RDCShrinkVirtualSize(pScrn);
 
 exit:
     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Exit RDCSelectInitialMode()== \n");

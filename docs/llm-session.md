@@ -2,7 +2,7 @@
 
 **Session ID:** ses_029316b25ffe0zETyA4WaUIR3t
 **Created:** 8/6/2026, 7:21:30 PM
-**Updated:** 8/19/2026, 8:55:09 PM
+**Updated:** 8/19/2026, 9:26:03 PM
 
 ---
 
@@ -70149,6 +70149,3060 @@ Let me write a concise final response in Chinese (matching the user's language).
 4. **`src/rdc.h`**:新增 `DefaultMode` 选项与 `bEDIDValid`/`usEDIDNativeH/V`/`usEDIDMaxH/V` 字段。
 
 构建零新增警告(模块 `rdcm15_drv.so` 正常生成);环形模式链表操作与 EDID 解析已用独立测试程序验证(全部通过)。上板验证:重启 Xorg 看日志 `RDCReadEDID: native resolution ...` 与 `RDCSelectInitialMode: ...`,`xrandr` 初始即应为显示器原生分辨率。
+
+---
+
+## User
+
+@log/Xorg.0.log 分析日志，继续修复问题，测试使用的显示器分辨率为1280x1024@60Hz，但分辨率依然被设置到了最大值
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 5.9s)
+
+_Thinking:_
+
+The user has provided a log file at `log/Xorg.0.log` and says the display is 1280x1024@60Hz but the resolution is still set to the maximum. Let me analyze the log.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "wc -l /home/liaronce/git/xf86-video-rdc/log/Xorg.0.log",
+  "description": "Check log file size"
+}
+```
+
+**Output:**
+```
+309 /home/liaronce/git/xf86-video-rdc/log/Xorg.0.log
+
+```
+
+**Tool: grep**
+
+**Input:**
+```json
+{
+  "pattern": "RDCReadEDID|RDCSelectInitialMode|Removing mode|Mode pool|mode pool|currentMode|virtual",
+  "path": "/home/liaronce/git/xf86-video-rdc/log/Xorg.0.log"
+}
+```
+
+**Output:**
+```
+Found 3 matches
+/home/liaronce/git/xf86-video-rdc/log/Xorg.0.log:
+  Line 104: [  2434.033] (II) RDC GFX R0.1.1(0): RDCReadEDID: native resolution 1281x1025, max 1281x1025 (device 0x3, DDC port 0xb7)
+
+  Line 158: [  2434.041] (II) RDC GFX R0.1.1(0): virtual X = 1920
+
+  Line 159: [  2434.041] (II) RDC GFX R0.1.1(0): virtual Y = 1200
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 12.2s)
+
+_Thinking:_
+
+Let me analyze the log more. Key finding: `RDCReadEDID: native resolution 1281x1025, max 1281x1025` — the native resolution parsed is 1281x1025, not 1280x1024! This is an off-by-one in my DTD parsing.
+
+Wait — the DTD fields store active pixels - 1. Let me recheck my parse:
+```c
+usH = (dtd[2] | ((dtd[4] & 0xF0) << 4)) + 1;
+usV = (dtd[5] | ((dtd[7] & 0xF0) << 4)) + 1;
+```
+
+For 1280x1024: H active field = 1279 = 0x04FF → dtd[2]=0xFF, dtd[4] high nibble=0x0. usH = 0xFF | 0 = 255 + 1 = 256?? That's wrong.
+
+Wait — the EDID DTD encoding: HActivePixels = (dtd[2] | ((dtd[4] & 0xF0) << 4)) + 1. For 1280: 1280-1 = 1279 = 0x04FF. dtd[2] = 0xFF (low byte), dtd[4] bits 7-4 = 0x0 (high nibble). So usH = (0xFF | (0x0 << 4)) + 1 = 256?? No wait: 0x04FF: low byte 0xFF, high nibble 0x04. dtd[2] = 0xFF, dtd[4] = 0x40. usH = (0xFF | (0x40 << 4)) + 1 = (0xFF | 0x400) + 1 = 0x4FF + 1 = 1280. Correct.
+
+The log shows 1281x1025, which means the EDID actually encodes... hmm. 1281 = (dtd[2] | (dtd[4]<<4)) + 1 → dtd field = 1280 = 0x500 → dtd[2]=0x00, dtd[4]=0x50. So the monitor's EDID DTD literally says 1280 active (plus 1 = 1281)?? That would mean the EDID encodes 1280+1=1281 active pixels. That's odd but possible with a buggy/loose EDID. OR my parsing of `CreateEDIDDetailedTimingList`/`CBIOS_SetEDIDToModeTable` round-trip isn't the issue.
+
+Wait — actually, this 1281x1025 also affects `RDCFindMode(pScrn, 1281, 1025)` → no mode named 1281x1025 exists → falls back to `RDCFindMode(1281, 1025)` for max → also NULL → then `RDCPruneModes(pScrn, 1281, 1025)` — modes with H>1281 or V>1025 removed. Hmm 1280x1024 is NOT > 1281/1025, so it's kept. But no reorder happened → initial mode stays at head = 1920x1200 (max). That's the bug now.
+
+Also the user says the display is 1280x1024@60Hz. The EDID read gives native 1281x1025. So the EDID DTD active pixels literally encode 1280 and 1024 (1281/1025 after +1). This is a common situation? Actually no — most EDIDs encode exact values (1280 → field 1279). Here it encoded 1280 → 1281. This is a slightly "off" EDID (some monitors/TV encoders pad).
+
+Actually wait — let me reconsider. Maybe the EP932M HDMI encoder passes through the EDID unchanged, and this particular monitor's EDID is slightly non-standard, OR the pixel clock derived... no, active pixels are what they are.
+
+Hmm, but actually let me reconsider whether the DTD in the log is the true first DTD. The `RDCReadEDID` parses ALL 4 DTDs and takes the first valid one as native. The first DTD at offset 54 might be a "pseudo" DTD or the native. 1281x1025 is unusual. But whatever the EDID says, the correct behavior is: the native mode "1280x1024" should match. Since the parsed values are off by one, the exact-match lookup fails.
+
+There are a few ways to fix this robustly:
+
+1. **Round the parsed native/max to common resolutions.** E.g., round 1281x1025 → 1280x1024. But generic rounding is hacky.
+
+2. **Don't rely on exact match**: when the exact native isn't found, find the largest mode ≤ native (instead of falling to max which is also off). Actually the current fallback is `RDCFindMode(usEDIDMaxH, usEDIDMaxV)` = 1281x1025, not found. Better fallback: find the largest mode with HDisplay ≤ maxH && VDisplay ≤ maxV... but that would pick 1920x1200 if max were wrong. Hmm. For native fallback: largest mode ≤ native. For a native of 1281x1025 → largest mode ≤ that = 1280x1024. 
+
+3. **Round the EDID values to the nearest sensible resolution**: For a DTD, active pixels are almost always exact (1280, 1024). The +1 overshoot suggests the monitor/EDID is odd. But note: other EDID DTDs might legitimately have odd pixel counts? Rare. 
+
+Let me look at what's actually in the log more to understand the full picture: the mode pool entries, the "Modes" validated, etc. Let me read the full log.
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/log/Xorg.0.log"
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/log/Xorg.0.log</path>
+<type>file</type>
+<content>
+1: [  2432.683] 
+2: X.Org X Server 1.21.1.24
+3: X Protocol Version 11, Revision 0
+4: [  2432.683] Current Operating System: Linux afterglow-vortex86 7.1.7-aosc-main #1 SMP PREEMPT Fri Aug  7 17:39:11 UTC 2026 i586
+5: [  2432.683] Kernel command line: BOOT_IMAGE=/boot/vmlinuz-7.1.7-aosc-main root=PARTUUID=13f1b7ac-01 rd.auto rd.auto=1
+6: [  2432.683]  
+7: [  2432.683] Current version of pixman: 0.46.4
+8: [  2432.683] 	Before reporting problems, check http://wiki.x.org
+9: 	to make sure that you have the latest version.
+10: [  2432.683] Markers: (--) probed, (**) from config file, (==) default setting,
+11: 	(++) from command line, (!!) notice, (II) informational,
+12: 	(WW) warning, (EE) error, (NI) not implemented, (??) unknown.
+13: [  2432.684] (==) Log file: "/var/log/Xorg.0.log", Time: Wed Aug 19 21:14:40 2026
+14: [  2432.687] (==) Using config directory: "/etc/X11/xorg.conf.d"
+15: [  2432.687] (==) Using system config directory "/usr/share/X11/xorg.conf.d"
+16: [  2432.690] (==) ServerLayout "X.org Configured"
+17: [  2432.690] (**) |-->Screen "Screen0" (0)
+18: [  2432.690] (**) |   |-->Monitor "Monitor0"
+19: [  2432.695] (**) |   |-->Device "Card0"
+20: [  2432.696] (**) Allowing byte-swapped clients
+21: [  2432.696] (==) Automatically adding devices
+22: [  2432.696] (==) Automatically enabling devices
+23: [  2432.696] (==) Automatically adding GPU devices
+24: [  2432.696] (==) Automatically binding GPU devices
+25: [  2432.697] (==) Max clients allowed: 256, resource mask: 0x1fffff
+26: [  2432.703] (WW) `fonts.dir' not found (or not valid) in "/usr/share/fonts".
+27: [  2432.703] 	Entry deleted from font path.
+28: [  2432.703] 	(Run 'mkfontdir' on "/usr/share/fonts").
+29: [  2432.703] (**) FontPath set to:
+30: 	built-ins
+31: [  2432.703] (**) ModulePath set to "/usr/lib/xorg/modules"
+32: [  2432.703] (II) The server relies on udev to provide the list of input devices.
+33: 	If no devices become available, reconfigure udev or disable AutoAddDevices.
+34: [  2432.703] (II) Module ABI versions:
+35: [  2432.703] 	X.Org ANSI C Emulation: 0.4
+36: [  2432.703] 	X.Org Video Driver: 25.2
+37: [  2432.703] 	X.Org XInput driver : 24.4
+38: [  2432.703] 	X.Org Server Extension : 10.0
+39: [  2432.716] (--) PCI:*(0@0:13:0) 17f3:2012:17f3:2012 rev 0, Mem @ 0xf8000000/67108864, 0xfebe0000/131072, I/O @ 0x0000df80/128, BIOS @ 0x????????/131072
+40: [  2432.716] (II) LoadModule: "glx"
+41: [  2432.718] (II) Loading /usr/lib/xorg/modules/extensions/libglx.so
+42: [  2432.786] (II) Module glx: vendor="X.Org Foundation"
+43: [  2432.786] 	compiled for 1.21.1.24, module version = 1.0.0
+44: [  2432.786] 	ABI class: X.Org Server Extension, version 10.0
+45: [  2432.786] (II) LoadModule: "rdcm15"
+46: [  2432.787] (II) Loading /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+47: [  2432.787] (II) Module rdcm15: vendor="X.Org Foundation"
+48: [  2432.787] 	compiled for 1.21.1.24, module version = 0.0.1
+49: [  2432.787] 	Module class: X.Org Video Driver
+50: [  2432.787] 	ABI class: X.Org Video Driver, version 25.2
+51: [  2432.787] (II) RDC GFX R0.1.1: Driver for RDC Graphics Chipsets: M2010_A0, M2010,
+52: 	M2011, M2012, M2013, M2014, M2015, M2200
+53: [  2432.788] (++) using VT number 7
+54: 
+55: [  2432.798] xf86EnableIO: failed to enable I/O ports access (Function not implemented)
+56: [  2432.798] (II) Loading sub module "int10"
+57: [  2432.798] (II) LoadModule: "int10"
+58: [  2432.800] (II) Loading /usr/lib/xorg/modules/libint10.so
+59: [  2432.804] (II) Module int10: vendor="X.Org Foundation"
+60: [  2432.805] 	compiled for 1.21.1.24, module version = 1.0.0
+61: [  2432.805] 	ABI class: X.Org Video Driver, version 25.2
+62: [  2432.805] (II) Loading sub module "vbe"
+63: [  2432.805] (II) LoadModule: "vbe"
+64: [  2432.805] (II) Loading /usr/lib/xorg/modules/libint10.so
+65: [  2432.805] (II) Module int10: vendor="X.Org Foundation"
+66: [  2432.805] 	compiled for 1.21.1.24, module version = 1.0.0
+67: [  2432.805] 	ABI class: X.Org Video Driver, version 25.2
+68: [  2432.807] (II) Loading sub module "int10"
+69: [  2432.807] (II) LoadModule: "int10"
+70: [  2432.808] (II) Loading /usr/lib/xorg/modules/libint10.so
+71: [  2432.808] (II) Module int10: vendor="X.Org Foundation"
+72: [  2432.808] 	compiled for 1.21.1.24, module version = 1.0.0
+73: [  2432.808] 	ABI class: X.Org Video Driver, version 25.2
+74: [  2432.808] (II) RDC GFX R0.1.1(0): initializing int10
+75: [  2432.810] (WW) RDC GFX R0.1.1(0): Unable to retrieve all of segment 0x0C0000.
+76: [  2432.810] (II) RDC GFX R0.1.1(0): No legacy BIOS found -- trying PCI
+77: [  2432.810] (EE) RDC GFX R0.1.1(0): Cannot read V_BIOS (5) Input/output error
+78: [  2432.810] (II) Loading sub module "vgahw"
+79: [  2432.810] (II) LoadModule: "vgahw"
+80: [  2432.811] (II) Loading /usr/lib/xorg/modules/libvgahw.so
+81: [  2432.817] (II) Module vgahw: vendor="X.Org Foundation"
+82: [  2432.817] 	compiled for 1.21.1.24, module version = 0.1.0
+83: [  2432.817] 	ABI class: X.Org Video Driver, version 25.2
+84: [  2432.817] (II) Loading sub module "fb"
+85: [  2432.817] (II) LoadModule: "fb"
+86: [  2432.817] (II) Module "fb" already built-in
+87: [  2432.817] (**) RDC GFX R0.1.1(0): Depth 24, (--) framebuffer bpp 32
+88: [  2432.818] (==) RDC GFX R0.1.1(0): Using gamma correction (1.0, 1.0, 1.0)
+89: [  2432.818] (==) RDC GFX R0.1.1(0): RGB weight 888
+90: [  2432.818] (==) RDC GFX R0.1.1(0): Default visual is TrueColor
+91: [  2432.818] (II) RDC GFX R0.1.1(0): Using Hardware Cursor
+92: [  2432.818] (II) RDC GFX R0.1.1(0): ==Enter RDCMapVBIOS()==
+93: [  2432.818] (II) RDC GFX R0.1.1(0): Read VBIOS from PCI ROM FAILED
+94: [  2432.873] (II) RDC GFX R0.1.1(0): ==Exit RDCMapVBIOS()== return TRUE
+95: [  2433.047] (II) RDC GFX R0.1.1(0):  Video Memory Size= 64 MB
+96: [  2433.047] (II) RDC GFX R0.1.1(0): Reserved Capture buffer
+97: [  2433.047] (II) RDC GFX R0.1.1(0): Reserve CommandQ buffer
+98: [  2433.047] (II) RDC GFX R0.1.1(0): Reserved Cursor Buffer
+99: [  2433.047] (II) RDC GFX R0.1.1(0):  Available memory size= 58687488 B
+100: [  2433.049] (EE) RDC GFX R0.1.1(0): Customer ID = 0x35504d44
+101: [  2433.049] (EE) RDC GFX R0.1.1(0): HDMI Type = 0x4
+102: [  2433.049] (II) RDC GFX R0.1.1(0): Orginal H Size = 1920, V Size = 1080 for HDMI type 4
+103: [  2433.049] (II) RDC GFX R0.1.1(0): Update  H Size = 1920, V Size = 1080 for HDMI type 4
+104: [  2434.033] (II) RDC GFX R0.1.1(0): RDCReadEDID: native resolution 1281x1025, max 1281x1025 (device 0x3, DDC port 0xb7)
+105: [  2434.033] (II) RDC GFX R0.1.1(0): Monitor0: Using hsync range of 30.00-90.00 kHz
+106: [  2434.033] (II) RDC GFX R0.1.1(0): Monitor0: Using vrefresh range of 50.00-60.00 Hz
+107: [  2434.033] (II) RDC GFX R0.1.1(0): Clock range:   9.50 to 266.95 MHz
+108: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+109: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+110: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+111: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+112: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+113: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+114: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+115: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+116: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+117: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+118: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+119: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+120: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+121: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+122: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+123: [  2434.034] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+124: [  2434.035] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+125: [  2434.035] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+126: [  2434.035] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+127: [  2434.035] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+128: [  2434.035] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+129: [  2434.035] (II) RDC GFX R0.1.1(0): Not using built-in mode "720x576" (unknown reason)
+130: [  2434.035] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+131: [  2434.035] (II) RDC GFX R0.1.1(0): Not using built-in mode "720x480" (unknown reason)
+132: [  2434.035] (II) RDC GFX R0.1.1(0): Virtual size is 192log/Xorg.0.log0x1200 (pitch 1920)
+133: [  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "1280x1024": 108.0 MHz, 64.0 kHz, 60.0 Hz
+134: [  2434.035] (II) RDC GFX R0.1.1(0): Modeline "1280x1024"x60.0  108.00  1280 0 0 1688  1024 0 0 1066 (64.0 kHz zb)
+135: [  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "1280x720": 74.2 MHz, 45.1 kHz, 60.0 Hz
+136: [  2434.035] (II) RDC GFX R0.1.1(0): Modeline "1280x720"x60.0   74.25  1280 0 0 1648  720 0 0 750 (45.1 kHz zb)
+137: [  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "1024x768": 65.0 MHz, 48.4 kHz, 60.0 Hz
+138: [  2434.035] (II) RDC GFX R0.1.1(0): Modeline "1024x768"x60.0   65.00  1024 0 0 1344  768 0 0 806 (48.4 kHz zb)
+139: [  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "800x600": 36.0 MHz, 35.2 kHz, 56.0 Hz
+140: [  2434.035] (II) RDC GFX R0.1.1(0): Modeline "800x600"x56.0   36.00  800 0 0 1024  600 0 0 625 (35.2 kHz zb)
+141: [  2434.036] (**) RDC GFX R0.1.1(0): *Built-in mode "640x480": 25.2 MHz, 31.5 kHz, 60.0 Hz
+142: [  2434.036] (II) RDC GFX R0.1.1(0): Modeline "640x480"x60.0   25.18  640 0 0 800  480 0 0 525 (31.5 kHz zb)
+143: [  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "1280x960": 108.0 MHz, 60.0 kHz, 60.0 Hz
+144: [  2434.036] (II) RDC GFX R0.1.1(0): Modeline "1280x960"x60.0  108.00  1280 0 0 1800  960 0 0 1000 (60.0 kHz b)
+145: [  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "1280x768": 79.5 MHz, 47.8 kHz, 60.0 Hz
+146: [  2434.036] (II) RDC GFX R0.1.1(0): Modeline "1280x768"x60.0   79.50  1280 0 0 1664  768 0 0 798 (47.8 kHz b)
+147: [  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "1024x600"
+148: [  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "800x600": 40.0 MHz, 37.9 kHz, 60.0 Hz
+149: [  2434.036] (II) RDC GFX R0.1.1(0): Modeline "800x600"x60.0   40.00  800 0 0 1056  600 0 0 628 (37.9 kHz b)
+150: [  2434.036] (==) RDC GFX R0.1.1(0): DPI set to (96, 96)
+151: [  2434.036] (II) RDC GFX R0.1.1(0): XAA is no longer available, using EXA acceleration
+152: [  2434.036] (II) Loading sub module "exa"
+153: [  2434.036] (II) LoadModule: "exa"
+154: [  2434.036] (II) Loading /usr/lib/xorg/modules/libexa.so
+155: [  2434.041] (II) Module exa: vendor="X.Org Foundation"
+156: [  2434.041] 	compiled for 1.21.1.24, module version = 2.6.0
+157: [  2434.041] 	ABI class: X.Org Video Driver, version 25.2
+158: [  2434.041] (II) RDC GFX R0.1.1(0): virtual X = 1920
+159: [  2434.041] (II) RDC GFX R0.1.1(0): virtual Y = 1200
+160: [  2434.043] (II) RDC GFX R0.1.1(0): Using 56383488 bytes of offscreen memory for linear (offset=0x232800)
+161: [  2434.043] (II) RDC GFX R0.1.1(0): vgaHWGetIOBase: hwp->IOBase is 0x03d0
+162: [  2434.052] (II) EXA(0): Offscreen pixmap area of 49471488 bytes
+163: [  2434.052] (II) EXA(0): Driver registered support for the following operations:
+164: [  2434.052] (II)         Solid
+165: [  2434.052] (II)         Copy
+166: [  2434.052] (II)         UploadToScreen
+167: [  2434.052] (II)         DownloadFromScreen
+168: [  2434.052] (II) RDC GFX R0.1.1(0): [EXA] Enabled EXA acceleration.
+169: [  2434.052] (==) RDC GFX R0.1.1(0): Backing store enabled
+170: [  2434.052] (==) RDC GFX R0.1.1(0): Silken mouse enabled
+171: [  2434.054] (==) RDC GFX R0.1.1(0): DPMS enabled
+172: [  2434.120] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+173: [  2434.120] CBIOS: Setting 1280 x 1024 resolution
+174: [  2434.121] CBIOS: Original Setting 1280 x 1024 resolution
+175: [  2434.129] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+176: [  2434.151] (II) RDC GFX R0.1.1(0): RDC: GPU supports 2D acceleration only; GLX/OpenGL hardware acceleration is not available (no 3D engine). AIGLX software-renderer warnings are expected and can be ignored.
+177: [  2434.154] (II) Initializing extension Generic Event Extension
+178: [  2434.156] (II) Initializing extension SHAPE
+179: [  2434.158] (II) Initializing extension MIT-SHM
+180: [  2434.160] (II) Initializing extension XInputExtension
+181: [  2434.167] (II) Initializing extension XTEST
+182: [  2434.168] (II) Initializing extension BIG-REQUESTS
+183: [  2434.170] (II) Initializing extension SYNC
+184: [  2434.174] (II) Initializing extension XKEYBOARD
+185: [  2434.177] (II) Initializing extension XC-MISC
+186: [  2434.179] (II) Initializing extension SECURITY
+187: [  2434.181] (II) Initializing extension XFIXES
+188: [  2434.183] (II) Initializing extension RENDER
+189: [  2434.185] (II) Initializing extension RANDR
+190: [  2434.188] (II) Initializing extension COMPOSITE
+191: [  2434.190] (II) Initializing extension DAMAGE
+192: [  2434.192] (II) Initializing extension MIT-SCREEN-SAVER
+193: [  2434.193] (II) Initializing extension DOUBLE-BUFFER
+194: [  2434.195] (II) Initializing extension RECORD
+195: [  2434.197] (II) Initializing extension DPMS
+196: [  2434.199] (II) Initializing extension Present
+197: [  2434.201] (II) Initializing extension DRI3
+198: [  2434.201] (II) Initializing extension X-Resource
+199: [  2434.202] (II) Initializing extension XVideo
+200: [  2434.204] (II) Initializing extension XVideo-MotionCompensation
+201: [  2434.204] (II) Initializing extension GLX
+202: [  2434.206] (II) AIGLX: Screen 0 is not DRI2 capable
+203: [  2434.207] (EE) AIGLX error: dlopen of /usr/lib/xorg/modules/dri/swrast_dri.so failed (/usr/lib/xorg/modules/dri/swrast_dri.so: cannot open shared object file: No such file or directory)
+204: [  2434.207] (EE) AIGLX error: unable to load driver swrast
+205: [  2434.207] (EE) GLX: could not load software renderer
+206: [  2434.207] (II) GLX: no usable GL providers found for screen 0
+207: [  2434.207] (II) Initializing extension XFree86-VidModeExtension
+208: [  2434.209] (II) Initializing extension XFree86-DGA
+209: [  2434.211] (II) Initializing extension XFree86-DRI
+210: [  2434.211] (II) Initializing extension DRI2
+211: [  2434.722] (II) config/udev: Adding input device 2.4G Receiver (/dev/input/event3)
+212: [  2434.722] (**) 2.4G Receiver: Applying InputClass "evdev keyboard catchall"
+213: [  2434.722] (II) LoadModule: "evdev"
+214: [  2434.723] (II) Loading /usr/lib/xorg/modules/input/evdev_drv.so
+215: [  2434.734] (II) Module evdev: vendor="X.Org Foundation"
+216: [  2434.734] 	compiled for 1.21.1.24, module version = 2.10.6
+217: [  2434.734] 	Module class: X.Org XInput Driver
+218: [  2434.734] 	ABI class: X.Org XInput driver, version 24.4
+219: [  2434.734] (II) Using input driver 'evdev' for '2.4G Receiver'
+220: [  2434.734] (**) 2.4G Receiver: always reports core events
+221: [  2434.734] (**) evdev: 2.4G Receiver: Device: "/dev/input/event3"
+222: [  2434.735] (--) evdev: 2.4G Receiver: Vendor 0x3554 Product 0xfc03
+223: [  2434.735] (--) evdev: 2.4G Receiver: Found keys
+224: [  2434.735] (II) evdev: 2.4G Receiver: Configuring as keyboard
+225: [  2434.735] (**) Option "config_info" "udev:/sys/devices/pci0000:00/0000:00:0a.0/usb3/3-1/3-1:1.0/0003:3554:FC03.0001/input/input3/event3"
+226: [  2434.735] (II) XINPUT: Adding extended input device "2.4G Receiver" (type: KEYBOARD, id 6)
+227: [  2434.735] (**) Option "xkb_rules" "evdev"
+228: [  2434.747] (II) config/udev: Adding input device 2.4G Receiver Mouse (/dev/input/event4)
+229: [  2434.747] (**) 2.4G Receiver Mouse: Applying InputClass "evdev pointer catchall"
+230: [  2434.747] (II) Using input driver 'evdev' for '2.4G Receiver Mouse'
+231: [  2434.748] (**) 2.4G Receiver Mouse: always reports core events
+232: [  2434.748] (**) evdev: 2.4G Receiver Mouse: Device: "/dev/input/event4"
+233: [  2434.748] (--) evdev: 2.4G Receiver Mouse: Vendor 0x3554 Product 0xfc03
+234: [  2434.748] (--) evdev: 2.4G Receiver Mouse: Found 9 mouse buttons
+235: [  2434.748] (--) evdev: 2.4G Receiver Mouse: Found scroll wheel(s)
+236: [  2434.748] (--) evdev: 2.4G Receiver Mouse: Found relative axes
+237: [  2434.748] (--) evdev: 2.4G Receiver Mouse: Found x and y relative axes
+238: [  2434.748] (II) evdev: 2.4G Receiver Mouse: Configuring as mouse
+239: [  2434.748] (II) evdev: 2.4G Receiver Mouse: Adding scrollwheel support
+240: [  2434.748] (**) evdev: 2.4G Receiver Mouse: YAxisMapping: buttons 4 and 5
+241: [  2434.748] (**) evdev: 2.4G Receiver Mouse: EmulateWheelButton: 4, EmulateWheelInertia: 10, EmulateWheelTimeout: 200
+242: [  2434.749] (**) Option "config_info" "udev:/sys/devices/pci0000:00/0000:00:0a.0/usb3/3-1/3-1:1.1/0003:3554:FC03.0002/input/input4/event4"
+243: [  2434.749] (II) XINPUT: Adding extended input device "2.4G Receiver Mouse" (type: MOUSE, id 7)
+244: [  2434.749] (II) evdev: 2.4G Receiver Mouse: initialized for relative axes.
+245: [  2434.752] (**) 2.4G Receiver Mouse: (accel) keeping acceleration scheme 1
+246: [  2434.752] (**) 2.4G Receiver Mouse: (accel) acceleration profile 0
+247: [  2434.752] (**) 2.4G Receiver Mouse: (accel) acceleration factor: 2.000
+248: [  2434.752] (**) 2.4G Receiver Mouse: (accel) acceleration threshold: 4
+249: [  2434.760] (II) config/udev: Adding input device 2.4G Receiver Mouse (/dev/input/mouse0)
+250: [  2434.760] (II) No input driver specified, ignoring this device.
+251: [  2434.760] (II) This device may have been added with another device file.
+252: [  2434.769] (II) config/udev: Adding input device 2.4G Receiver (/dev/input/event5)
+253: [  2434.769] (II) No input driver specified, ignoring this device.
+254: [  2434.769] (II) This device may have been added with another device file.
+255: [  2434.779] (II) config/udev: Adding input device 2.4G Receiver Consumer Control (/dev/input/event6)
+256: [  2434.779] (**) 2.4G Receiver Consumer Control: Applying InputClass "evdev keyboard catchall"
+257: [  2434.779] (II) Using input driver 'evdev' for '2.4G Receiver Consumer Control'
+258: [  2434.779] (**) 2.4G Receiver Consumer Control: always reports core events
+259: [  2434.779] (**) evdev: 2.4G Receiver Consumer Control: Device: "/dev/input/event6"
+260: [  2434.780] (--) evdev: 2.4G Receiver Consumer Control: Vendor 0x3554 Product 0xfc03
+261: [  2434.780] (--) evdev: 2.4G Receiver Consumer Control: Found 1 mouse buttons
+262: [  2434.780] (--) evdev: 2.4G Receiver Consumer Control: Found scroll wheel(s)
+263: [  2434.780] (--) evdev: 2.4G Receiver Consumer Control: Found relative axes
+264: [  2434.780] (II) evdev: 2.4G Receiver Consumer Control: Forcing relative x/y axes to exist.
+265: [  2434.780] (--) evdev: 2.4G Receiver Consumer Control: Found absolute axes
+266: [  2434.780] (II) evdev: 2.4G Receiver Consumer Control: Forcing absolute x/y axes to exist.
+267: [  2434.780] (--) evdev: 2.4G Receiver Consumer Control: Found keys
+268: [  2434.780] (II) evdev: 2.4G Receiver Consumer Control: Configuring as mouse
+269: [  2434.780] (II) evdev: 2.4G Receiver Consumer Control: Configuring as keyboard
+270: [  2434.780] (II) evdev: 2.4G Receiver Consumer Control: Adding scrollwheel support
+271: [  2434.780] (**) evdev: 2.4G Receiver Consumer Control: YAxisMapping: buttons 4 and 5
+272: [  2434.780] (**) evdev: 2.4G Receiver Consumer Control: EmulateWheelButton: 4, EmulateWheelInertia: 10, EmulateWheelTimeout: 200
+273: [  2434.780] (**) Option "config_info" "udev:/sys/devices/pci0000:00/0000:00:0a.0/usb3/3-1/3-1:1.1/0003:3554:FC03.0002/input/input6/event6"
+274: [  2434.780] (II) XINPUT: Adding extended input device "2.4G Receiver Consumer Control" (type: KEYBOARD, id 8)
+275: [  2434.780] (**) Option "xkb_rules" "evdev"
+276: [  2434.782] (II) evdev: 2.4G Receiver Consumer Control: initialized for relative axes.
+277: [  2434.783] (WW) evdev: 2.4G Receiver Consumer Control: ignoring absolute axes.
+278: [  2434.785] (**) 2.4G Receiver Consumer Control: (accel) keeping acceleration scheme 1
+279: [  2434.785] (**) 2.4G Receiver Consumer Control: (accel) acceleration profile 0
+280: [  2434.785] (**) 2.4G Receiver Consumer Control: (accel) acceleration factor: 2.000
+281: [  2434.785] (**) 2.4G Receiver Consumer Control: (accel) acceleration threshold: 4
+282: [  2434.794] (II) config/udev: Adding input device 2.4G Receiver System Control (/dev/input/event7)
+283: [  2434.794] (**) 2.4G Receiver System Control: Applying InputClass "evdev keyboard catchall"
+284: [  2434.794] (II) Using input driver 'evdev' for '2.4G Receiver System Control'
+285: [  2434.795] (**) 2.4G Receiver System Control: always reports core events
+286: [  2434.795] (**) evdev: 2.4G Receiver System Control: Device: "/dev/input/event7"
+287: [  2434.795] (--) evdev: 2.4G Receiver System Control: Vendor 0x3554 Product 0xfc03
+288: [  2434.795] (--) evdev: 2.4G Receiver System Control: Found keys
+289: [  2434.795] (II) evdev: 2.4G Receiver System Control: Configuring as keyboard
+290: [  2434.795] (**) Option "config_info" "udev:/sys/devices/pci0000:00/0000:00:0a.0/usb3/3-1/3-1:1.1/0003:3554:FC03.0002/input/input7/event7"
+291: [  2434.795] (II) XINPUT: Adding extended input device "2.4G Receiver System Control" (type: KEYBOARD, id 9)
+292: [  2434.795] (**) Option "xkb_rules" "evdev"
+293: [  2434.803] (II) config/udev: Adding input device HDA Digital PCBeep (/dev/input/event2)
+294: [  2434.803] (II) No input driver specified, ignoring this device.
+295: [  2434.804] (II) This device may have been added with another device file.
+296: [  2434.809] (II) config/udev: Adding input device AT Translated Set 2 keyboard (/dev/input/event0)
+297: [  2434.809] (**) AT Translated Set 2 keyboard: Applying InputClass "evdev keyboard catchall"
+298: [  2434.809] (II) Using input driver 'evdev' for 'AT Translated Set 2 keyboard'
+299: [  2434.809] (**) AT Translated Set 2 keyboard: always reports core events
+300: [  2434.809] (**) evdev: AT Translated Set 2 keyboard: Device: "/dev/input/event0"
+301: [  2434.810] (--) evdev: AT Translated Set 2 keyboard: Vendor 0x1 Product 0x1
+302: [  2434.810] (--) evdev: AT Translated Set 2 keyboard: Found keys
+303: [  2434.810] (II) evdev: AT Translated Set 2 keyboard: Configuring as keyboard
+304: [  2434.810] (**) Option "config_info" "udev:/sys/devices/platform/i8042/serio0/input/input0/event0"
+305: [  2434.810] (II) XINPUT: Adding extended input device "AT Translated Set 2 keyboard" (type: KEYBOARD, id 10)
+306: [  2434.810] (**) Option "xkb_rules" "evdev"
+307: [  2434.817] (II) config/udev: Adding input device PC Speaker (/dev/input/event1)
+308: [  2434.818] (II) No input driver specified, ignoring this device.
+309: [  2434.818] (II) This device may have been added with another device file.
+
+(End of file - total 309 lines)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 31.5s)
+
+_Thinking:_
+
+Now I have very useful log data. Key observations:
+
+1. **Line 104**: `RDCReadEDID: native resolution 1281x1025, max 1281x1025 (device 0x3, DDC port 0xb7)`. Device 0x3 = CRTIndex. So the display path is CRT. The EDID DTD active pixels decode to 1281x1025 (i.e., the EDID literally encodes 1280+1, 1024+1).
+
+Wait, actually — is that right? Let me reconsider. Hmm, `(dtd[2] | ((dtd[4] & 0xF0) << 4)) + 1`. If the monitor EDID has H active = 1280 field value... For 1280x1024@60, standard DTD: H active = 1280 (field 1279 = 0x04FF), H blank = 408 (0x198), V active = 1024 (field 1023 = 0x03FF), V blank = 42 (0x02A), pixel clock = 108.0 MHz (10800 in 10kHz).
+
+So expected decode: H = 0x4FF + 1 = 1280, V = 0x3FF + 1 = 1024. But we got 1281x1025. That means the field value = 1280 (0x500) and 1024 (0x400). So the EDID stores H active field = 1280 (= 1281 pixels) and V active field = 1024 (= 1025 pixels).
+
+Hmm, that means the monitor (or its EDID generator) is off by one in the DTD. OR... wait. Let me reconsider — maybe the EDID is actually fine and my parse is wrong.
+
+Let me recompute carefully. EDID DTD bytes:
+- byte 0-1: pixel clock (10kHz units)
+- byte 2: HActive low 8 bits
+- byte 4 bits 7-4: HActive high 4 bits
+- byte 5: VActive low 8 bits
+- byte 7 bits 7-4: VActive high 4 bits
+
+HActive = (byte2 | ((byte4 & 0xF0) << 4)) + 1.
+
+For 1280: HActive field = 1279 = 0b0000_0100_1111_1111 = 0x04FF.
+- byte2 = 0xFF
+- byte4 high nibble = 0x0
+
+Parse: (0xFF | (0x0 << 4)) + 1 = 256. That's wrong! Wait: (0xFF | 0x000) = 0xFF = 255, +1 = 256. NO — that's not right either.
+
+Hmm wait, I need to be careful: `(byte4 & 0xF0) << 4` — byte4 & 0xF0 = 0x00 (high nibble 0), << 4 = 0. So H = 0xFF + 1 = 256?? That's clearly wrong. The EDID field for 1280 is 1279 = 0x04FF. So byte4 = 0x40, byte2 = 0xFF. `(0xFF | (0x40 << 4)) + 1 = (0xFF | 0x400) + 1 = 0x4FF + 1 = 1280`. OK that's what I had. Fine.
+
+So parse is correct; the log says field = 1280/1024 → pixels = 1281/1025. This EDID is genuinely off by one, OR... the monitor EDID is 1280x1024 but the "active" is given as 1280 and 1024 (without -1), which some buggy EDIDs do.
+
+Regardless of WHY, the practical issue: `RDCFindMode(1281, 1025)` fails → no reorder → `RDCPruneModes(1281, 1025)` removes modes with H>1281 || V>1025: 1920x1200, 1920x1080, 1680x1050, 1600x1200, 1440x900, 1280x1024(?), 1366x768... wait 1280x1024: H=1280 ≤ 1281, V=1024 ≤ 1025 → KEPT. So 1280x1024 remains in the list, but it's not the head (the head is still 1920x1200... but wait, prune removed 1920x1200!). 
+
+Hmm wait — the log shows `Virtual size is 1920x1200` and `virtual X = 1920, virtual Y = 1200`. And the built-in modes listed start with "1280x1024" marked with `*` (preferred marker? No — `*` = M_T_PREFERRED? Actually in xf86PrintModes, `*` marks the current/default mode). Let me check: line 133 `(**) RDC GFX R0.1.1(0): *Built-in mode "1280x1024"` — the `*` prefix marks the "default" mode (M_T_DEFAULT) I believe. Actually in xf86PrintModes: "PrintModes" marks modes with `*` if `type & M_T_DEFAULT`, and `+` if builtin... Let me recall. From xf86PrintModes:
+
+```c
+void xf86PrintModes(ScrnInfoPtr scrp)
+{
+    DisplayModePtr p;
+    float hsync, refresh = 0;
+    Bool monitorModes;
+    char flag;
+
+    monitorModes = (scrp->monitor->DDC != NULL);
+    ...
+    p = scrp->modes;
+    ...
+    if (p->type & M_T_DEFAULT)
+        flag = '*';
+    else
+        flag = '+';
+    ...
+}
+```
+
+Actually I recall `*` = "default" (M_T_DEFAULT) and `+` = builtin. So the log shows 1280x1024 has `*` (M_T_DEFAULT) and 1280x960 etc. have `+` (M_T_BUILTIN). Interesting!
+
+Wait, that means pScrn->modes[0] = 1280x1024 marked M_T_DEFAULT! So the initial mode IS 1280x1024 in the final list! And "CBIOS: Setting 1280 x 1024 resolution" at line 173 confirms the driver set 1280x1024!
+
+Hmm, so the log shows the driver DID start at 1280x1024! But the user says "分辨率依然被设置到了最大值" (resolution is still set to the maximum).
+
+Wait, let me re-read. The user says the monitor is 1280x1024@60 but resolution still set to max. But the log shows:
+- `Virtual size is 1920x1200` (the virtual framebuffer size)
+- `*Built-in mode "1280x1024"` — the default mode
+- `CBIOS: Setting 1280 x 1024 resolution` — the mode actually programmed
+
+So Xorg's initial mode IS 1280x1024 now. But the user reports max. Hmm. Let me reconsider.
+
+Wait — is 1280x1024 "the maximum"? No, the user says the max is 1920x1200 and the monitor is 1280x1024. If the driver now starts at 1280x1024, the issue should be resolved... unless the DE (desktop environment) later switches to a max mode via RandR!
+
+Hmm, "分辨率依然被设置到了最大值" — maybe the DE (like KDE/GNOME) is setting the resolution to the max. Why would it? Because the mode list exposed via RandR still contains large modes (1920x1200 etc.), and the DE picks the "best" available mode. In the legacy RandR path, the DE picks the preferred mode (first mode marked preferred or the first mode). 
+
+Wait, but actually — the log shows the list order. Let me look at the printed modes order:
+```
+*Built-in mode "1280x1024"    <- first (default)
+ Built-in mode "1280x720"
+ Built-in mode "1024x768"
+ Built-in mode "800x600"
+ Built-in mode "640x480"
+  Built-in mode "1280x960"
+  Built-in mode "1280x768"
+  Built-in mode "1024x600"
+  Built-in mode "800x600"
+```
+
+WAIT. The mode list after validation is: 1280x1024, 1280x720, 1024x768, 800x600, 640x480, 1280x960, 1280x768, 1024x600, 800x600(60Hz). 
+
+Hmm — so where did 1920x1200, 1920x1080, 1680x1050, 1600x1200, 1440x900 go?? They should be in the config Modes list! But they're NOT printed. And the virtual size is 1920x1200 (so virtualX/Y were set to the largest BEFORE pruning).
+
+Wait — the printed modes start at 1280x1024. That's consistent with my `RDCPruneModes(1281, 1025)` REMOVING modes with H>1281 or V>1025: 1920x1200 (V>1025), 1920x1080 (V>1025), 1680x1050 (V>1025), 1600x1200 (V>1025), 1440x900 (V>1025), 1366x768 (kept! H=1366≤1281? no 1366>1281 → REMOVED), 1280x1024 (kept), 1280x720 (kept)...
+
+Wait, 1366x768: H=1366 > 1281 → removed. So the list is: 1280x1024, 1280x720, 1024x768, 800x600, 640x480 (from config list, in order), plus the "all modes" fallback: 1280x960, 1280x768, 1024x600, 800x600@60.
+
+Hmm wait, but where did the config-ordered modes go? The config Modes list is "1920x1200" "1920x1080" "1680x1050" "1600x1200" "1440x900" "1280x1024" "1366x768" "1280x720" "1024x768" "800x600" "640x480". After xf86ValidateModes, pScrn->modes = [1920x1200, 1920x1080, 1680x1050, 1600x1200, 1440x900, 1280x1024, 1366x768, 1280x720, 1024x768, 800x600, 640x480]. Then my RDCPruneModes(1281, 1025) removes: 1920x1200, 1920x1080, 1680x1050, 1600x1200, 1440x900, 1366x768. Remaining: [1280x1024, 1280x720, 1024x768, 800x600, 640x480] — matches the log! Plus the fallback modes added because after removing modes, `validateAllDefaultModes`... hmm, actually the extra modes (1280x960 etc.) came from the "scan through unconsidered modePool members" logic? 
+
+Actually wait — the modes 1280x960, 1280x768, 1024x600, 800x600@60 are NOT in the config Modes list. They must come from the `validateAllDefaultModes` path where unconsidered pool modes get added. Hmm, actually no — with PANORAMIX enabled by default, that path... Let me not worry about where they came from; the point is the final list starts with 1280x1024 as the default.
+
+So the driver IS now starting at 1280x1024 (confirmed by "CBIOS: Setting 1280 x 1024 resolution"). 
+
+BUT the user says "分辨率依然被设置到了最大值". So either:
+1. The user hasn't tested with the new build yet and is reporting the same old symptom (but they provided this log which shows the new driver running — RDCReadEDID is in the log, so this IS the new build).
+2. The DE switches to max resolution AFTER Xorg starts (via RandR).
+
+Given the log shows Xorg correctly starts at 1280x1024, the problem must be that the DE (desktop environment) is switching to the max resolution afterward. Why would the DE do that? Because RandR exposes modes 1280x720... no wait, the remaining modes are all ≤1280x1024. Hmm, the max remaining mode IS 1280x1024 (or 1280x960, 1280x768). So even the DE couldn't switch to 1920x1200 — those modes were pruned!
+
+Wait, unless... hold on. Let me reconsider. The user says the resolution is STILL set to max. But per this log, the initial mode is 1280x1024 and no mode > 1281x1025 remains. So how is it "max"?
+
+Hmm, wait — maybe the log the user provided is from the FIXED driver but they're saying the problem persists in a different sense: the monitor's native is 1280x1024, and the driver started at 1280x1024... but the user says "分辨率依然被设置到了最大值" — maybe they mean the VIRTUAL size (1920x1200)? No...
+
+Or wait — maybe the log is from BEFORE the user's current test and shows the previous state? Let me check the timeline: the log timestamp is "Wed Aug 19 21:14:40 2026", and the current date is Aug 19 21:18. The log is 4 minutes old. And RDCReadEDID appears — so it's from the NEW driver build.
+
+Hmm, let me reconsider. Actually, wait. Let me re-read the user's message: "测试使用的显示器分辨率为1280x1024@60Hz，但分辨率依然被设置到了最大值" — "the display used for testing is 1280x1024@60Hz, but the resolution is still set to the maximum."
+
+And the log line 132: "Virtual size is 1920x1200 (pitch 1920)". Line 158-159: "virtual X = 1920, virtual Y = 1200". 
+
+Maybe the DE reports/uses the virtual size? No, the virtual size is the framebuffer, not the display mode.
+
+Hmm, but actually — wait. Let me look more carefully. Maybe the issue is that the DE DID set a large mode and there's a second log section... but the log only shows one Xorg start (2432-2434 seconds).
+
+Let me reconsider: maybe the actual displayed resolution on the monitor is 1920x1200 because... hmm. The log clearly says "CBIOS: Setting 1280 x 1024 resolution".
+
+Hold on — let me reconsider whether the log the user gave me is really the latest. Let me check the git state and see if maybe the driver on the target was built with an intermediate version. Actually, the user likely rebuilt and tested with my first fix. The log shows the fix working (1280x1024 initial). But the user says still max.
+
+Wait wait. Let me re-read the printed mode list once more:
+
+```
+[  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "1280x1024": 108.0 MHz, 64.0 kHz, 60.0 Hz
+[  2434.035] (**) RDC GFX R0.1.1(0): Modeline "1280x1024"x60.0  108.00  1280 0 0 1688  1024 0 0 1066 (64.0 kHz zb)
+[  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "1280x720": ...
+[  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "1024x768": ...
+[  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "800x600": ...
+[  2434.035] (**) RDC GFX R0.1.1(0): *Built-in mode "640x480": ...
+[  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "1280x960": ...
+[  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "1280x768": ...
+[  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "1024x600"
+[  2434.036] (**) RDC GFX R0.1.1(0):  Built-in mode "800x600": 40.0 MHz, 37.9 kHz, 60.0 Hz
+```
+
+Interesting — ALL the first 5 modes have `*`. In xf86PrintModes, the `*` flag... let me check what xf86PrintModes actually prints. Let me look at the xorg source.
+
+Actually, from xf86Mode.c xf86PrintModes:
+```c
+    for (p = scrp->modes; p != NULL && p != first; p = p->next) { ... }
+```
+Let me look at it in the source I have.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '2060,2110p' hw/xfree86/common/xf86Mode.c",
+  "description": "Read xf86PrintModes source"
+}
+```
+
+**Output:**
+```
+    float hsync, refresh = 0;
+    const char *desc, *desc2, *prefix, *uprefix;
+
+    if (scrp == NULL)
+        return;
+
+    xf86DrvMsg(scrp->scrnIndex, X_INFO, "Virtual size is %dx%d (pitch %d)\n",
+               scrp->virtualX, scrp->virtualY, scrp->displayWidth);
+
+    p = scrp->modes;
+    if (p == NULL)
+        return;
+
+    do {
+        desc = desc2 = "";
+        hsync = xf86ModeHSync(p);
+        refresh = xf86ModeVRefresh(p);
+        if (p->Flags & V_INTERLACE) {
+            desc = " (I)";
+        }
+        if (p->Flags & V_DBLSCAN) {
+            desc = " (D)";
+        }
+        if (p->VScan > 1) {
+            desc2 = " (VScan)";
+        }
+        if (p->type & M_T_BUILTIN)
+            prefix = "Built-in mode";
+        else if (p->type & M_T_DEFAULT)
+            prefix = "Default mode";
+        else if (p->type & M_T_DRIVER)
+            prefix = "Driver mode";
+        else
+            prefix = "Mode";
+        if (p->type & M_T_USERDEF)
+            uprefix = "*";
+        else
+            uprefix = " ";
+        if (hsync == 0 || refresh == 0) {
+            if (p->name)
+                xf86DrvMsg(scrp->scrnIndex, X_CONFIG,
+                           "%s%s \"%s\"\n", uprefix, prefix, p->name);
+            else
+                xf86DrvMsg(scrp->scrnIndex, X_PROBED,
+                           "%s%s %dx%d (unnamed)\n",
+                           uprefix, prefix, p->HDisplay, p->VDisplay);
+        }
+        else if (p->Clock == p->SynthClock) {
+            xf86DrvMsg(scrp->scrnIndex, X_CONFIG,
+                       "%s%s \"%s\": %.1f MHz, %.1f kHz, %.1f Hz%s%s\n",
+                       uprefix, prefix, p->name, p->Clock / 1000.0,
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 68.9s)
+
+_Thinking:_
+
+So the `*` prefix means `M_T_USERDEF`. All 5 modes from the config Modes list have `*` (USERDEF), and the extra fallback modes (1280x960 etc.) don't.
+
+Note: **NONE of the printed modes have `M_T_PREFERRED` or `M_T_DEFAULT` flags visible** — the prefix is "Built-in mode" for all (they're M_T_BUILTIN|M_T_USERDEF). My `RDCSetPreferredMode` set `M_T_PREFERRED` on 1280x1024... wait, did it? 
+
+Hmm, wait. `RDCSelectInitialMode` → EDID native 1281x1025 → `RDCFindMode(1281, 1025)` → not found → `RDCFindMode(1281, 1025)` (max, same) → not found → m = NULL → no RDCSetPreferredMode call → only `RDCPruneModes(1281, 1025)`. So no mode got M_T_PREFERRED! And the head after pruning... 
+
+Wait, the head of pScrn->modes after pruning = 1280x1024 (since all bigger ones were removed, and the config order had 1280x1024 after the removed ones). So currentMode = 1280x1024, and X starts at 1280x1024 (confirmed by "CBIOS: Setting 1280 x 1024 resolution").
+
+BUT — since NO mode is marked M_T_PREFERRED, what does the DE do? The DE (e.g., KDE Plasma, GNOME, or a lightweight DE) reads the RandR mode list. In legacy RandR, modes are reported in list order. The DE picks... typically the first mode (or the preferred one). The first mode in the list = 1280x1024. So the DE should keep 1280x1024.
+
+Hmm, but the user says resolution is still max. 
+
+Wait, wait. Let me reconsider the whole thing. Maybe the log is NOT from a successful boot. Let me look at the actual displayed resolution. The log says the mode set was 1280x1024. So the display should be 1280x1024.
+
+Unless... hmm, the user is looking at the WRONG thing. "分辨率依然被设置到了最大值" — maybe they mean the VIRTUAL framebuffer is 1920x1200 (line 132: "Virtual size is 1920x1200")? When a DE (especially KDE with panning) sees a virtual screen larger than the visible mode, it might... hmm no.
+
+Actually — hold on. Let me reconsider. Maybe the issue is: **the DE DID start, and the resolution shown to the user is 1920x1200 because the DE picked the largest mode from RandR.** But how, if 1920x1200 isn't in the list?
+
+Wait — actually, are we sure 1920x1200 isn't still in the RandR list? RandR's mode list is built from `pScrn->modes` — which was pruned. So no.
+
+Hmm, let me reconsider yet again. Maybe the user's report of "still max" refers to a test BEFORE this log. Let me check the git log/timestamps. Actually, I can't know. Let me focus on what the log tells me and what could still be wrong.
+
+Actually — WAIT. I just realized something critical. Let me re-read:
+
+Line 132: `Virtual size is 1920x1200 (pitch 1920)` — this is printed by xf86PrintModes BEFORE the mode list. The virtual size is 1920x1200. This means `scrp->virtualX = 1920, virtualY = 1200`. This was computed by xf86ValidateModes from the FIRST validated mode = 1920x1200 (before my pruning). My RDCPruneModes removed 1920x1200 from the mode list but did NOT reduce virtualX/virtualY.
+
+Then in RDCScreenInit:
+```
+virtual X = 1920
+virtual Y = 1200
+Using 56383488 bytes of offscreen memory for linear (offset=0x232800)
+```
+And `fbScreenInit(pScreen, FBVirtualAddr, pScrn->virtualX=1920, virtualY=1200, ...)`.
+
+So the framebuffer is 1920x1200. The visible mode is 1280x1024. The desktop is 1920x1200 with the display showing 1280x1024 of it (panning). This is the standard legacy behavior... but here's the thing: **the DE might see the virtual resolution 1920x1200 and set the screen to 1920x1200!**
+
+Actually, in legacy Xorg with RandR, the "screen size" reported by RandR is `virtualX x virtualY` (1920x1200), and the current mode is 1280x1024 with a viewport. KDE/GNOME use the RandR output's current mode. Hmm.
+
+Actually wait — for legacy single-output screens, RandR reports the screen size as the virtual size, and the output's current mode as the active mode. A DE typically keeps the active mode unless it wants to change it.
+
+Hmm, let me think about this differently. What does the DE do at startup? Most DEs query RandR and:
+1. If the output has a preferred mode, select it.
+2. Otherwise keep the current mode.
+
+Since no mode is marked preferred (my RDCSetPreferredMode wasn't called because the native 1281x1025 didn't match), the DE keeps the current mode = 1280x1024. So the display should be 1280x1024.
+
+Unless the DE lists modes and picks the first = 1280x1024 = current. Same result.
+
+So per the log, the driver starts at 1280x1024. The user's complaint of "max" doesn't match this log...
+
+UNLESS the user means something different by "分辨率被设置到了最大值". Let me reconsider: maybe the user is seeing the DISPLAY at 1920x1200 (out of range / blank / scaled) because... hmm.
+
+Hold on, let me reconsider the possibility that the log is from a system where the DE already switched. Actually, the log ends at 2434.818 — just after input device setup, before a DE would start (DE starts as a client later). This is the X server startup log. The DE would start after this and could switch modes.
+
+Actually, you know what — let me reconsider the problem completely. Let me re-read the user's statement: "测试使用的显示器分辨率为1280x1024@60Hz，但分辨率依然被设置到了最大值".
+
+Given the log shows the driver correctly setting 1280x1024 at startup, and the user still sees "max", the most likely explanation is: **the DE is switching the resolution to the max after startup.** Why would the DE do that? Because the RandR mode list order or preferred-mode marking causes it.
+
+Let me think about what the DE sees:
+- RandR output modes (from `xf86RROutputSetModes`): iterates `modes` twice — first pass picks M_T_PREFERRED modes, second pass the rest. If NO mode is preferred, the order is just the list order (1280x1024 first).
+- npreferred = 0.
+- The DE (KDE) typically uses the preferred mode; if none, uses... the first mode? Or the current mode?
+
+Hmm. Actually, wait. Let me reconsider: maybe the DE uses the FIRST mode in the RandR list. The first mode = 1280x1024. Not max.
+
+OK here's another thought — maybe the log is from the target but the user's ACTUAL complaint is about the **current session's observed behavior**, and maybe the mode list is still exposing large modes through some other path. Let me check: is there another Xorg log or a running session? The user said "分辨率依然被设置到了最大值" — "resolution is STILL set to max". This implies they tested the new driver and the symptom persists.
+
+Given the log, Xorg starts at 1280x1024. So the only way the symptom "persists" is if the DE or something changes it after start. 
+
+OR... maybe the user considers the "resolution" as reported by `xrandr` or the DE's screen size, which would show 1920x1200 (the virtual size!). KDE's "Screen" resolution setting shows the mode, but the RandR screen size is 1920x1200. Some DEs display the virtual size. Hmm.
+
+Actually, let me reconsider — maybe I should look at this from the RandR screen size angle. In legacy drivers, `RRScreenSizeSet`... The RandR screen (CRTC) for legacy drivers: the "screen size" is `pScrn->virtualX × virtualY`. The current mode's HDisplay×VDisplay is 1280x1024. A DE like KDE uses `RRGetScreenInfo` and picks the mode matching the screen size, OR the preferred mode.
+
+Hmm, actually, KDE Plasma's behavior: it reads the output's preferred mode and current mode. If `RR_Preferred` isn't set... it uses the current mode.
+
+I'm going in circles. Let me focus on what's ACTIONABLE from the log:
+
+**Actionable issue #1: The native resolution from EDID is 1281x1025 (off by one).** The exact-match lookup fails, so no mode gets marked preferred, and the "initial mode = native" logic silently doesn't fire. It only works by luck (prune leaves 1280x1024 at the head).
+
+Why is it 1281x1025? The DTD active pixels are 1280/1024 (not 1279/1023). This could be:
+(a) The monitor's EDID is genuinely encoded that way.
+(b) My parse is off.
+
+Let me double-check my parse against how the vbe module / xf86MonCreate parses DTDs. The standard: `HDisplay = (b[2] | ((b[4] & 0xF0) << 4)) + 1`. Yes, +1. And the field stores (active - 1). So if the monitor encodes 1280 in the field, HDisplay = 1281. 
+
+BUT — here's a thought: this is likely because **the EDID DTD in the monitor is for 1280x1024 but the EP932M or the monitor's EDID has the "native" DTD at 1280x1024 with a slightly different timing, OR the monitor's EDID is simply non-compliant**. Regardless, the robust fix is to handle near-miss resolutions.
+
+Actually — hmm, wait. Let me reconsider. Could this be a REAL 1281x1025 mode? Some monitors (especially older TFTs via certain scaler chips) do report 1281x1025 as the max DTD. It's rare but happens. The display's actual native is 1280x1024.
+
+**Fix strategy**: In `RDCSelectInitialMode`, when the exact native mode isn't found, find the mode that best fits (largest mode ≤ native H and V, or the mode with minimum area difference). This handles the off-by-one. Let me implement: if exact match fails, search for the mode with the smallest (HDisplay*nativeV + VDisplay*nativeH - ...) hmm. Simpler: largest mode where HDisplay ≤ nativeH && VDisplay ≤ nativeV. For native 1281x1025 → largest mode ≤ = 1280x1024. 
+
+**Actionable issue #2**: Even better — the mode pool PRUNE uses maxH/maxV (1281x1025), which kept 1280x1024 (good) but the native-mode-pinning failed. Fix the pinning as above.
+
+**Actionable issue #3**: **No mode got M_T_PREFERRED**, so the DE has no "preferred" mode to honor. Once we fix the pinning, 1280x1024 gets M_T_PREFERRED and is first, so the DE honors it.
+
+Now — is that the whole story for "still max"? Let me think about whether the DE would pick 1920x1200 even with the current state. The mode list after prune has no 1920x1200, so the DE CAN'T pick 1920x1200. So the user's "max" must be either:
+1. The virtual size (1920x1200) shown somewhere.
+2. A mode from a stale list.
+
+Hmm hold on — actually, let me reconsider. What if the user's DE session is using a mode that WAS in a previous Xorg run... no, X restart.
+
+Actually, wait — let me reconsider the timeline. The user said "分辨率依然被设置到了最大值" — maybe they're reporting from a test where the driver was the OLD one (before my fix)? The log provided shows the NEW driver (RDCReadEDID present). But maybe the log is from a successful test and the user is describing the overall situation incorrectly? 
+
+OR — maybe I'm misreading and the actual displayed resolution IS 1920x1200. Let me re-examine: is there any indication the mode set was different? "CBIOS: Setting 1280 x 1024 resolution" — that's from LoadVESATiming, called during VBE_SetMode / RDCModeInit. It sets 1280x1024. That's the actual hardware mode.
+
+Hmm, but wait — this "CBIOS: Setting 1280 x 1024 resolution" appears at line 173, which is during RDCScreenInit (after "Query Display Path Info" at line 172, which is the ScreenInit query). So the mode programmed at screen init = 1280x1024. Good.
+
+So X IS running at 1280x1024 in this log. The user says max. Contradiction.
+
+Unless... the user's DE is setting it to max AFTER. And the reason the DE sets max is that the RandR list still contains... wait, does it? Let me verify the RandR list more carefully.
+
+The printed modes are the full list (11 modes shown): 1280x1024*, 1280x720*, 1024x768*, 800x600*, 640x480*, 1280x960, 1280x768, 1024x600, 800x600(60). All ≤1280x1024. So RandR can't offer >1280x1024.
+
+Therefore the "max" the user sees can only be 1280x1024, which is... wait, could the user's complaint be that 1280x1024 is what the DE picked but the DE *reports* it as something? No, 1280x1024 IS the native.
+
+Hmm, hmm. OK let me step back and consider: maybe the log is from the FIXED build but the user then tested again and saw max — meaning the log isn't representative, OR the fix works at X startup but the DE overrides.
+
+Actually, you know what, let me look at this from a completely different angle. What if the DE is the issue and the driver needs to restrict the mode pool more aggressively — i.e., the mode list should be LIMITED to EDID-supported modes (1280x1024 and below), which IS what happens (prune by max). The list after prune is all ≤1281x1025. So the DE's max choice would be 1280x1024. Not max.
+
+Wait — unless my RDCPruneModes DIDN'T run in the actual build on the target. The log shows prune DID run (large modes removed). Hmm.
+
+OK here's another possibility I should seriously consider: **The user's log might be from a DIFFERENT/OLDER session than their "still max" observation, or they're reporting the virtual resolution.** Actually — let me just check: what's "最大值" from the user's perspective? The monitor is 1280x1024. If the display shows 1280x1024 correctly, the user wouldn't complain. If it shows 1920x1200 (out of range → black/blue screen, or the monitor's OSD shows 1920x1200), they'd complain "still max".
+
+For the display to show 1920x1200, the driver must have programmed 1920x1200. But the log says 1280x1024.
+
+UNLESS the DE switched to a mode not in the printed list. Is that possible? RandR can only use modes from the list... unless the DE creates a new mode via xrandr --newmode / --addmode. A DE wouldn't normally.
+
+Hmm, wait — actually, there IS a way the display could show 1920x1200: if the CRTC/mode wasn't actually set and the monitor is showing whatever... no.
+
+Let me take yet another look at the log for the mode actually programmed. Actually — hold on, let me look at line 173 more carefully in context:
+
+```
+172: [ 2434.120] (II) RDC GFX R0.1.1(0):  Query Display Path Info 
+173: [ 2434.120] CBIOS: Setting 1280 x 1024 resolution
+174: [ 2434.121] CBIOS: Original Setting 1280 x 1024 resolution
+```
+
+`LoadVESATiming`: "CBIOS: Setting %d x %d resolution" with pModeInfo = VESAEDIDTable[0] (since bEDIDValid). So VESAEDIDTable[0] = 1280x1024 — that's the DTD I fed in via `CBIOS_SetEDIDToModeTable`! Because my RDCReadEDID set `pCBIOSExtension->bEDIDValid = TRUE` and called `CBIOS_SetEDIDToModeTable` with the DTD parsed as 1281x1025... wait, the DTD parse: `EDIDDetailedTimingList.usHorDispEnd` = 1281 (parseEDIDDetailedTiming computes `(dtd[2] | ((dtd[4]&0xF0)<<4))` WITHOUT +1!). Let me check ParseEDIDDetailedTiming: `ulHorDispEnd = (ULONG)(((*(USHORT*)(pucDetailedTimingBlock+2)) & 0x00FF) | (((*(USHORT*)(pucDetailedTimingBlock+4)) & 0x00F0) << 4));` — no +1! So VESAEDIDTable[0].H_Size = 1280 (field value without +1). 
+
+So the DTD field = 1280 → VESAEDIDTable[0].H_Size = 1280. And "CBIOS: Setting 1280 x 1024 resolution". But my RDCParseEDID computes usH = field + 1 = 1281. So:
+- `CreateEDIDDetailedTimingList`/`ParseEDIDDetailedTiming` (existing code): active = field (no +1) → 1280x1024. 
+- My `RDCParseEDID`: active = field + 1 → 1281x1025.
+
+Now WHICH is correct per the EDID spec? The spec says the DTD field stores (active_pixels - 1), so +1 is spec-correct. The existing driver code does NOT add 1 (it's used for setting timing regs where the value semantics may differ). 
+
+For THIS monitor, if the field is 1280, then either:
+(a) The monitor's native IS 1281x1025 (weird), or
+(b) The monitor encodes the active pixels directly (no -1), so spec-wise it's 1281 but practically 1280.
+
+Actually — hmm. There's a real possibility this is exactly the "1280x1024" monitor whose EDID field = 1280. If the monitor expects 1280 active pixels and its EDID field is 1280, then the field ISN'T stored as (active-1); the monitor's firmware is loose. In practice, both interpretations give the same visible result because the total is what matters, but the "native" resolution matching should use 1280x1024 (the mode name the pool has).
+
+So the fix: my `RDCParseEDID` should round the DTD values to account for this. Options:
+1. Try exact match first; if not found, also try (nativeH - 1, nativeV - 1) — handles the off-by-one.
+2. Use a tolerance when finding the mode.
+
+Actually, the cleanest robust approach: find the mode whose resolution is CLOSEST to native, preferring exact matches, then the largest mode ≤ native. Let me implement a "best fit" search:
+
+```c
+/* find mode best matching the target: exact, then largest with both dims <= target */
+static DisplayModePtr RDCFindModeBest(ScrnInfoPtr pScrn, int H, int V)
+{
+    DisplayModePtr m = RDCFindMode(pScrn, H, V);
+    DisplayModePtr best = NULL, p;
+    if (m) return m;
+    for (p = pScrn->modes; p; p = p->next) {
+        if (p->HDisplay <= H && p->VDisplay <= V)
+            if (!best || (p->HDisplay * p->VDisplay > best->HDisplay * best->VDisplay))
+                best = p;
+        if (p->next == pScrn->modes) break;
+    }
+    return best;
+}
+```
+
+Wait — but careful: if native is 1281x1025 and the best fit is "largest ≤ 1281x1025" = 1280x1024. Good. If native is 1920x1080 (exact match in pool) → exact found. If native is 1600x900 (not in pool but ≤ pool modes) → largest ≤ 1600x900 = 1440x900. Reasonable fallback.
+
+Hmm, but there's a subtlety: for the "max" prune I should keep the current max-based pruning (uses the EDID max bounding box). With native 1281x1025, prune keeps ≤1281x1025 modes. Good — 1280x1024 kept.
+
+Also, I should probably make the DTD parse tolerant: `usH` could legitimately be off by one. But rather than complicate the parse, the best-fit lookup handles it.
+
+Actually — wait, let me reconsider whether to also handle this in `RDCReadEDID` for the `CBIOS_SetEDIDToModeTable`/wCRTDefaultH/V path. The existing `CreateEDIDDetailedTimingList` (no +1) sets VESAEDIDTable to 1280x1024, which "CBIOS: Setting 1280 x 1024" uses. That's correct behavior. So leave it.
+
+Now — **the bigger question: is the "still max" complaint actually about the DE?** Let me think about what happens after X starts at 1280x1024 with a DE. If the DE is, say, LXDE/Openbox or a lightweight WM, it keeps the current mode. If it's KDE, it reads the preferred mode. No preferred mode set (bug #1) → KDE might pick the first mode in the RandR list.
+
+What's the first mode in the RandR list? `xf86RROutputSetModes` iterates with pref=1 first (modes with M_T_PREFERRED) — none — then pref=0 (all modes in list order) → first = 1280x1024. So the DE picks 1280x1024. Not max.
+
+So really, per this log, the display runs at 1280x1024. I'm now fairly convinced the user's "still max" observation either (a) refers to a stale/earlier test, or (b) the log doesn't capture the DE's later mode switch.
+
+Hmm wait, actually — hold on. Let me reconsider (b) seriously. What could the DE do? Let me think about KDE/GNOME behavior with legacy RandR:
+
+- GNOME (mutter): queries the output; if there's no preferred mode, uses the current mode. Stays 1280x1024.
+- KDE (kwin): similar.
+
+So no DE would switch to a nonexistent mode.
+
+OK, so maybe the user's report is actually about the VIRTUAL size being 1920x1200! Here's the thing: **the virtual size 1920x1200 means the DE's screen is 1920x1200** (the framebuffer). On the display, only 1280x1024 is visible at a time. If the DE or some app does "set screen to virtual size", or if the user checks the resolution via `xdpyinfo`/`xrandr`, they'd see the SCREEN size as 1920x1200 while the OUTPUT mode is 1280x1024.
+
+Hmm — actually YES. This is likely it! In legacy Xorg, `xrandr` reports:
+```
+Screen 0: minimum 320 x 200, current 1920 x 1200, maximum ...
+```
+The "current" screen size = virtual size = 1920x1200! And the output (VGA-0 or similar) shows its mode = 1280x1024.
+
+A DE like LXDE/Openbox or even the user checking `xrandr` without args sees "current 1920 x 1200" and concludes the resolution is max! And the desktop AREA is 1920x1200 (with the visible portion 1280x1024, pannable).
+
+So the REAL problem now: **the virtual size should match the initial mode (1280x1024), not 1920x1200.**
+
+How does virtual size get set? In `xf86ValidateModes`, when modeNames are given and virtualX/virtualY are 0 (not configured), the virtual size grows to the largest validated mode = 1920x1200 (the first mode before pruning). My RDCSelectInitialMode prunes AFTER validation, so virtualX/Y stay at 1920x1200.
+
+**Fix: after pruning/reordering in RDCSelectInitialMode, shrink the virtual size to the initial mode's size** (or the largest remaining mode). Specifically:
+- Set `pScrn->virtualX = _VIRTUALX(initialMode->HDisplay)` and `virtualY = initialMode->VDisplay`? Or to the largest remaining mode?
+
+Hmm — careful. The virtual size should be at least the largest mode in the list (so no mode is larger than the framebuffer). Since we pruned modes > EDID max, the largest remaining mode ≤ 1281x1025. Setting virtualX/Y to the largest remaining mode (e.g. 1280x1024) is correct. But wait — after RDCPruneModes, the largest remaining could be 1280x1024 (head). For the no-EDID case, modes stay large (1920x1200 remains in the list!) but the initial is 1024x768. Then virtual should stay 1920x1200 (to fit the largest remaining mode). Hmm.
+
+Actually — the cleanest: after RDCSelectInitialMode, set virtualX/Y to the largest mode remaining in `pScrn->modes` (scan the list). That keeps the framebuffer consistent with the available modes. For the EDID case, the largest remaining = 1280x1024 → virtual becomes 1280x1024 → the DE sees 1280x1024 screen. 
+
+But wait — changing virtualX/Y after xf86ValidateModes requires recomputing `displayWidth` (pitch) and re-checking framebuffer fit. `scanLineWidth`... The pitch was computed for 1920. If I shrink virtualX to 1280, the pitch should be recalculated (1280 * 4 bytes = 5120 bytes/line, aligned). Hmm. `xf86ValidateModes` set `scrp->displayWidth = linePitch` (1920). If I change virtualX, I should change displayWidth too.
+
+Alternatively — set virtualX/virtualY BEFORE xf86ValidateModes. I.e., pass the desired virtual size (native) as `virtualX/virtualY` params to xf86ValidateModes! Then xf86ValidateModes uses it as the fixed virtual size, and it validates/fits modes accordingly. But wait — if I pass a FIXED virtual size of 1280x1024, then modes larger than that get `MODE_VIRTUAL_X/Y` and are rejected during validation... which actually achieves the same as pruning, but BEFORE validation. Hmm, but the native res must be known before xf86ValidateModes — and RDCReadEDID runs before mode pool build, so it IS known. 
+
+Actually, that's an elegant approach: pass the EDID native size (or safe default) as the virtual size to xf86ValidateModes. Then:
+- virtual = 1280x1024 (fixed)
+- xf86ValidateModes rejects modes > virtual (MODE_VIRTUAL_X/Y) → they're not in pScrn->modes
+- The largest validated mode = 1280x1024 = head (if 1280x1024 is in the config Modes list, it's first among the valid ones)
+- virtual size = 1280x1024 automatically
+
+But there are wrinkles:
+1. The shipped config Modes list order: "1920x1200" first. With virtual fixed at 1280x1024, 1920x1200 etc. get rejected (MODE_VIRTUAL), then 1280x1024 (first matching) becomes the head. Good.
+2. `RDCSelectInitialMode`'s no-EDID case: virtual = 1024x768 fixed → modes > that rejected → head = 1024x768 (or whatever's largest ≤ virtual). Hmm, but this REJECTS 1280x1024 from the list entirely for a no-EDID monitor that actually supports it! That's worse — the user couldn't switch to 1280x1024 via xrandr. So for the no-EDID case, we should NOT cap virtual at 1024x768; we should keep all modes but just make the initial/safe mode the default. In that case virtual should be the largest mode (1920x1200) to fit everything.
+
+So: only cap the virtual size when EDID is valid. For no-EDID, keep virtual = largest mode but the initial mode is the safe default (panning possible).
+
+Hmm, so the virtual-size approach requires passing different virtualX/Y depending on EDID validity:
+- EDID valid: virtualX/Y = EDID native (or max). This makes xf86ValidateModes reject too-large modes AND sets virtual correctly.
+- EDID invalid: virtualX/Y = 0 (infer from largest mode), initial mode reordered to safe default.
+
+This is cleaner than post-validation pruning for the EDID case! And it fixes the virtual-size bug properly.
+
+But wait — there's a subtlety: if I pass virtualX = 1280, virtualY = 1024 to xf86ValidateModes, it uses those as FIXED virtual dimensions. The `_VIRTUALX` alignment applies. And `scanLineWidth` computes pitch from virtualX. Then modes larger than virtual get MODE_VIRTUAL_X/Y and are skipped. So pScrn->modes only contains modes ≤ 1280x1024. And virtualX/Y = 1280x1024. 
+
+Then RDCSelectInitialMode: native = 1281x1025 → exact match fails → best-fit (largest ≤ 1281x1025) = 1280x1024 → set preferred + move to head. Already at head (it's the first valid mode in config order). 
+
+Hmm wait — but with virtual = 1280x1024 fixed and config Modes list order, after rejecting 1920x1200, 1920x1080, 1680x1050, 1600x1200, 1440x900 (all > virtual), the first accepted = 1280x1024. Head = 1280x1024. 
+
+But what about modes like 1366x768? H=1366 > virtualX=1280 → rejected (MODE_VIRTUAL_X). But the monitor supports 1366x768 (it's in the config list and ≤ EDID max 1281x1025? wait 1366 > 1281 → it would be pruned by EDID max anyway). OK consistent.
+
+What if the monitor's native is 1366x768 but its max is 1366x768? Then virtual = 1366x768. Modes ≤ 1366x768 kept. 1280x1024 (V=1024 > 768) rejected. Correct — the monitor can't do 1280x1024.
+
+But hmm — what if the monitor's EDID max is 1920x1080 but native is 1366x768 (some monitors do have bigger DTDs)? Then virtual = native 1366x768 → modes 1920x1080 rejected even though the monitor supports them. That's slightly wrong but matches "native as virtual" semantics. Alternatively use virtual = EDID MAX. Then modes ≤ max are offered, and the initial is native. And virtual = max. Hmm.
+
+Which is better? Setting virtual = EDID max (e.g. 1281x1025) → virtual 1281x1025 → DE screen size 1281x1025 (weird number!). Setting virtual = native (1280x1024 after rounding)... 
+
+Ugh. The fundamental tension: virtual size should equal the largest mode in the list, and the largest mode in the list should be ≤ EDID max. For this monitor: EDID max = 1281x1025, largest offered mode = 1280x1024, so virtual should be 1280x1024.
+
+So the virtual size should be derived from the MODE LIST after filtering, not from raw EDID numbers. 
+
+Let me reconsider the cleanest implementation:
+
+**Approach: after RDCSelectInitialMode's prune/reorder, recompute virtualX/virtualY (and displayWidth) to fit the largest remaining mode.**
+
+Steps in RDCSelectInitialMode (or a follow-up):
+1. After pruning + reordering, scan pScrn->modes for the largest HDisplay and largest VDisplay.
+2. Set pScrn->virtualX = align(largestH), virtualY = largestV.
+3. Recompute pScrn->displayWidth (pitch) — must be ≥ virtualX and aligned to the required pitch increment (8 * bitsPerPixel per xf86ValidateModes's pitchInc=8*bpp). And must fit in framebuffer.
+4. Since modes were already validated against the old pitch/FB by xf86ValidateModes, the new smaller virtual definitely fits.
+
+Actually, wait — is recomputing displayWidth necessary? If virtualX shrinks from 1920 to 1280, the pitch can shrink from 1920 to 1280 (both multiples of 8*32=256? 1920 is a multiple of... 8*32=256; 1920/256=7.5 — NOT a multiple! Hmm. pitchInc passed was `8 * pScrn->bitsPerPixel` = 256. So pitch must be a multiple of 256? Wait, `pitchInc` param = 8 * bitsPerPixel = 256. And linePitch must be ≥ virtualX and a multiple of 256? Let me check scanLineWidth.
+
+Actually, the log shows `Virtual size is 1920x1200 (pitch 1920)` — pitch = 1920, which is NOT a multiple of 256. So pitchInc isn't enforced that way for this driver. `pScrn->xInc = 8` default (set in xf86ValidateModes since pScrn->xInc <= 0 → 8). And `_VIRTUALX` aligns virtualX to xInc=8. The pitch... `scanLineWidth(virtualX, virtualY, minPitch=320, apertureSize, BankFormat, pitchInc=256)` — pitchInc is the minimum increment. 1920 is a multiple of 256? 1920/256 = 7.5. No. Hmm, so how was pitch 1920 accepted?
+
+Let me look at scanLineWidth to understand.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n \"$(grep -n 'scanLineWidth' hw/xfree86/common/xf86Mode.c | head -1 | cut -d: -f1),+45p\" hw/xfree86/common/xf86Mode.c",
+  "description": "Read scanLineWidth implementation"
+}
+```
+
+**Output:**
+```
+ * LCM() and scanLineWidth() are:
+ *
+ * Copyright 1997 through 2004 by Marc Aurele La France (TSI @ UQV), tsi@xfree86.org
+ *
+ * Permission to use, copy, modify, distribute, and sell this software and its
+ * documentation for any purpose is hereby granted without fee, provided that
+ * the above copyright notice appear in all copies and that both that copyright
+ * notice and this permission notice appear in supporting documentation, and
+ * that the name of Marc Aurele La France not be used in advertising or
+ * publicity pertaining to distribution of the software without specific,
+ * written prior permission.  Marc Aurele La France makes no representations
+ * about the suitability of this software for any purpose.  It is provided
+ * "as-is" without express or implied warranty.
+ *
+ * MARC AURELE LA FRANCE DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+ * INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.  IN NO
+ * EVENT SHALL MARC AURELE LA FRANCE BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+ * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+ * DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+ * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ * PERFORMANCE OF THIS SOFTWARE.
+ *
+ * Copyright 1990,91,92,93 by Thomas Roell, Germany.
+ * Copyright 1991,92,93    by SGCS (Snitily Graphics Consulting Services), USA.
+ *
+ * Permission to use, copy, modify, distribute, and sell this software
+ * and its documentation for any purpose is hereby granted without fee,
+ * provided that the above copyright notice appear in all copies and
+ * that both that copyright notice and this  permission notice appear
+ * in supporting documentation, and that the name of Thomas Roell nor
+ * SGCS be used in advertising or publicity pertaining to distribution
+ * of the software without specific, written prior permission.
+ * Thomas Roell nor SGCS makes no representations about the suitability
+ * of this software for any purpose. It is provided "as is" without
+ * express or implied warranty.
+ *
+ * THOMAS ROELL AND SGCS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+ * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS, IN NO EVENT SHALL THOMAS ROELL OR SGCS BE LIABLE FOR ANY
+ * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
+ * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
+ * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+ * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.5s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -n \"static int scanLineWidth\" hw/xfree86/common/xf86Mode.c",
+  "description": "Find scanLineWidth function"
+}
+```
+
+**Output:**
+```
+(no output)
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.5s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -n \"scanLineWidth(\" hw/xfree86/common/xf86Mode.c | head; grep -n \"^scanLineWidth\\|scanLineWidth(int\" hw/xfree86/common/xf86Mode.c | head",
+  "description": "Locate scanLineWidth definition"
+}
+```
+
+**Output:**
+```
+29: * LCM() and scanLineWidth() are:
+1196:scanLineWidth(unsigned int xsize,       /* pixels */
+1488:    /* Determine which pixmap format to pass to scanLineWidth() */
+1537:                     scanLineWidth(virtualX, virtualY, linePitches[i],
+1545:            linePitch = scanLineWidth(virtualX, virtualY, minPitch,
+1571:            linePitch = scanLineWidth(virtX, virtY, minPitch, apertureSize,
+1780:                         scanLineWidth(newVirtX, newVirtY, linePitches[i],
+1790:                newLinePitch = scanLineWidth(newVirtX, newVirtY, linePitch,
+1902:                         scanLineWidth(virtX, virtY, linePitches[i],
+1910:                linePitch = scanLineWidth(virtX, virtY, minPitch,
+1196:scanLineWidth(unsigned int xsize,       /* pixels */
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.6s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '1196,1295p' hw/xfree86/common/xf86Mode.c",
+  "description": "Read scanLineWidth body"
+}
+```
+
+**Output:**
+```
+scanLineWidth(unsigned int xsize,       /* pixels */
+              unsigned int ysize,       /* pixels */
+              unsigned int width,       /* pixels */
+              unsigned long BankSize,   /* char's */
+              PixmapFormatRec * pBankFormat, unsigned int nWidthUnit    /* bits */
+    )
+{
+    unsigned long nBitsPerBank, nBitsPerScanline, nBitsPerScanlinePadUnit;
+    unsigned long minBitsPerScanline, maxBitsPerScanline;
+
+    /* Sanity checks */
+
+    if (!nWidthUnit || !pBankFormat)
+        return -1;
+
+    nBitsPerBank = BankSize * 8;
+    if (nBitsPerBank % pBankFormat->scanlinePad)
+        return -1;
+
+    if (xsize > width)
+        width = xsize;
+    nBitsPerScanlinePadUnit = LCM(pBankFormat->scanlinePad, nWidthUnit);
+    nBitsPerScanline =
+        (((width * pBankFormat->bitsPerPixel) + nBitsPerScanlinePadUnit - 1) /
+         nBitsPerScanlinePadUnit) * nBitsPerScanlinePadUnit;
+    width = nBitsPerScanline / pBankFormat->bitsPerPixel;
+
+    if (!xsize || !(nBitsPerBank % pBankFormat->bitsPerPixel))
+        return (int) width;
+
+    /*
+     * Scanlines will be server-pad aligned at this point.  They will also be
+     * a multiple of nWidthUnit bits long.  Ensure that pixels with embedded
+     * bank boundaries are off-screen.
+     *
+     * It seems reasonable to limit total frame buffer size to 1/16 of the
+     * theoretical maximum address space size.  On a machine with 32-bit
+     * addresses (to 8-bit quantities) this turns out to be 256MB.  Not only
+     * does this provide a simple limiting condition for the loops below, but
+     * it also prevents unsigned long wraparounds.
+     */
+    if (!ysize)
+        return -1;
+
+    minBitsPerScanline = xsize * pBankFormat->bitsPerPixel;
+    if (minBitsPerScanline > nBitsPerBank)
+        return -1;
+
+    if (ysize == 1)
+        return (int) width;
+
+    maxBitsPerScanline =
+        (((unsigned long) (-1) >> 1) - minBitsPerScanline) / (ysize - 1);
+    while (nBitsPerScanline <= maxBitsPerScanline) {
+        unsigned long BankBase, BankUnit;
+
+        BankUnit = ((nBitsPerBank + nBitsPerScanline - 1) / nBitsPerBank) *
+            nBitsPerBank;
+        if (!(BankUnit % nBitsPerScanline))
+            return (int) width;
+
+        for (BankBase = BankUnit;; BankBase += nBitsPerBank) {
+            unsigned long x, y;
+
+            y = BankBase / nBitsPerScanline;
+            if (y >= ysize)
+                return (int) width;
+
+            x = BankBase % nBitsPerScanline;
+            if (!(x % pBankFormat->bitsPerPixel))
+                continue;
+
+            if (x < minBitsPerScanline) {
+                /*
+                 * Skip ahead certain widths by dividing the excess scanline
+                 * amongst the y's.
+                 */
+                y *= nBitsPerScanlinePadUnit;
+                nBitsPerScanline += ((x + y - 1) / y) * nBitsPerScanlinePadUnit;
+                width = nBitsPerScanline / pBankFormat->bitsPerPixel;
+                break;
+            }
+
+            if (BankBase != BankUnit)
+                continue;
+
+            if (!(nBitsPerScanline % x))
+                return (int) width;
+
+            BankBase = ((nBitsPerScanline - minBitsPerScanline) /
+                        (nBitsPerScanline - x)) * BankUnit;
+        }
+    }
+
+    return -1;
+}
+
+/*
+ * xf86ValidateModes
+ *
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 72.0s)
+
+_Thinking:_
+
+OK, scanLineWidth computes the pitch. For the driver's config: `pBankFormat->scanlinePad` is typically 32 (fb), bitsPerPixel=32, nWidthUnit = pitchInc = 256. LCM(32, 256) = 256. So pitch = ceil(width*32/256)*256/32 = round up width to multiple of 8 pixels. For width=1920: 1920 is a multiple of 8 → pitch = 1920. For 1280: pitch = 1280. OK so the pitch is just the width rounded up to multiple of 8.
+
+So if I shrink virtualX to 1280, displayWidth = 1280, fine.
+
+Now, implementing the virtual-size shrink post-validation: I need to update `pScrn->virtualX`, `virtualY`, `displayWidth`. But also `pScrn->fbOffset`? No. And RDCScreenInit uses `pScrn->virtualX/virtualY` for fbScreenInit and `pScrn->displayWidth` for pitch. And `vFillRDCModeInfo` uses `pScrn->virtualX` etc. And `RDCAdjustFrame` uses `pScrn->virtualY`, `displayWidth`. So updating these three fields post-validation is what's needed. Also `pRDC->VideoModeInfo` gets set in vFillRDCModeInfo from pScrn fields — fine.
+
+Actually, hmm, wait. Let me reconsider the approach once more. There are two sub-problems:
+
+**Problem A**: The initial/visible mode should be native (1280x1024) — currently works by luck (prune left 1280x1024 as head), but the exact-match pinning failed due to the 1281x1025 off-by-one, so no M_T_PREFERRED flag → the DE has no preferred mode signal.
+
+**Problem B**: The virtual/framebuffer size is 1920x1200, so `xrandr` reports "current 1920 x 1200" and the DE may treat the screen as 1920x1200.
+
+Both need fixing. Let me now design the final solution:
+
+### Fix A: Robust mode matching in RDCSelectInitialMode
+Replace `RDCFindMode` exact-match with a best-fit that:
+1. Tries exact H/V match.
+2. Falls back to the largest mode with both dimensions ≤ target.
+
+For native 1281x1025 → best fit = 1280x1024. Mark it M_T_PREFERRED and move to head.
+
+### Fix B: Shrink virtual size to fit the mode list after pruning
+After pruning, set `pScrn->virtualX/virtualY` to the largest remaining mode dimensions (aligned to xInc=8), and recompute `pScrn->displayWidth`.
+
+But wait — should the virtual be the largest remaining mode, or the initial (native) mode? For a DE, `xrandr` "current" shows the screen size. If virtual = 1280x1024 and all remaining modes ≤ 1280x1024, then the screen is exactly 1280x1024 with no panning. That's the ideal outcome. The largest remaining mode after EDID prune = 1280x1024 = native. So both interpretations coincide for this monitor.
+
+For the no-EDID case: modes remain up to 1920x1200 (not pruned), initial = 1024x768 (safe). If I shrink virtual to 1024x768, then the mode list would contain modes LARGER than the virtual/framebuffer → xf86ValidateModes already sized the framebuffer for 1920x1200, and modes > virtual is fine for the framebuffer (they fit), BUT RandR/DE might have issues, and switching to 1920x1200 via xrandr would work (mode exists, framebuffer big enough). Hmm, but the DE would see screen size 1024x768 while a 1920x1200 mode exists. Weird but the safe default is the point.
+
+Actually for the no-EDID case, better to keep virtual = largest mode (1920x1200) so everything works, and just have the INITIAL mode = 1024x768. The user sees a 1024x768 desktop on a pannable 1920x1200 framebuffer — hmm, that's odd too (xrandr current 1920x1200).
+
+Hmm. Honestly, for the no-EDID case, maybe the cleanest is to also cap the virtual size to the initial mode so the DE sees exactly 1024x768, and let the larger modes remain in the list (the user can still pick them; the framebuffer grows? No — if the framebuffer is 1024x768 and the user picks 1920x1200, RDCModeInit sets the mode and... the framebuffer must fit 1920x1200. If virtualX/Y were reduced to 1024x768, fbScreenInit creates a 1024x768 fb → picking 1920x1200 would break (framebuffer too small, X would show garbage/crash).
+
+So for the no-EDID case, I should NOT shrink the framebuffer below the largest mode. Keep virtual = largest mode. Only the INITIAL mode differs (1024x768 viewport into the 1920x1200 fb, pannable). This is the safe-correct behavior.
+
+For the EDID-valid case, shrinking virtual to the largest REMAINING mode (≤ EDID max) is correct because no mode exceeds it.
+
+So Fix B should: set virtualX/Y/displayWidth to the largest mode in the *current (post-prune)* list. In the EDID case, prune removes big modes → virtual shrinks to 1280x1024. In the no-EDID case, no prune → virtual stays 1920x1200. 
+
+Let me implement `RDCShrinkVirtualSize(pScrn)`:
+
+```c
+static void RDCShrinkVirtualSize(ScrnInfoPtr pScrn)
+{
+    DisplayModePtr p = pScrn->modes, largest = NULL;
+
+    if (!p)
+        return;
+    do {
+        if (!largest || (p->HDisplay * p->VDisplay > largest->HDisplay * largest->VDisplay))
+            largest = p;
+        p = p->next;
+    } while (p && p != pScrn->modes);
+
+    if (!largest)
+        return;
+    pScrn->virtualX = ((largest->HDisplay + pScrn->xInc - 1) / pScrn->xInc) * pScrn->xInc;
+    pScrn->virtualY = largest->VDisplay;
+    pScrn->displayWidth = pScrn->virtualX;  /* pitch = virtualX (multiple of 8) */
+}
+```
+
+Wait — `displayWidth` = pitch in pixels. For a 32bpp fb, pitch = virtualX (aligned). Since xInc = 8 and bitsPerPixel 32, virtualX aligned to 8 → pitch = virtualX. But is that right for 8/16bpp too? For 16bpp, pitch could be less? The legacy convention: displayWidth is in pixels and is typically ≥ virtualX. scanLineWidth would give exactly virtualX for our case (multiple of 8). Let me just set displayWidth = virtualX (it's always a multiple of 8 via xInc alignment). For 16bpp, `_VIRTUALX` still aligns to 8. Fine.
+
+Hmm, but actually — should displayWidth be recomputed via scanLineWidth for correctness with bank alignment? The driver uses no banked memory (linear FB), so pitch = virtualX is fine. The original xf86ValidateModes computed 1920 for virtual 1920. So mirroring: displayWidth = virtualX.
+
+But wait — there's a subtlety with `pScrn->xInc`. In xf86ValidateModes: `if (scrp->xInc <= 0) scrp->xInc = 8;`. The driver never sets xInc, so it's 8. Good.
+
+Also — I need to be careful: the framebuffer must still fit. Since we're only shrinking (largest remaining mode was already validated against the FB), it fits. Good.
+
+Also `pScrn->fbOffset`? No.
+
+Also there's `RDCScreenInit`:
+```c
+FBMemBox.x2 = pScrn->displayWidth;
+FBMemBox.y2 = (AvailFBSize / (pScrn->displayWidth * bpp)) - 1;
+...
+int cpp = pScrn->bitsPerPixel / 8;
+int areaoffset = (pScrn->virtualY) * pScrn->displayWidth;
+int size = (FBMemBox.y2 - (pScrn->virtualY/cpp)) * pScrn->displayWidth;
+```
+These use virtualY and displayWidth — consistent with new values. Good.
+
+And `xf86InitFBManagerLinear(pScreen, areaoffset, size)` — size = offscreen area. Fine.
+
+Now, one concern: the `RDCShrinkVirtualSize` reduces virtualX/Y, but does anything in Xorg's post-PreInit flow re-derive virtualX from modes? `xf86SetCrtcForModes` doesn't touch virtual. `RDCAdjustFrame` uses virtualY/displayWidth — fine. OK.
+
+Hmm, wait — actually there's one more issue. After shrinking virtualX, `RDCAdjustFrame` uses `pScrn->frameX0/frameY0`... those come from `xf86InitialConfiguration`? For legacy drivers, `pScrn->frameX0/frameY0` are 0. OK.
+
+Now, let me also reconsider Fix A more carefully. The `RDCSelectInitialMode` currently:
+```c
+m = RDCFindMode(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);
+if (!m) m = RDCFindMode(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);
+```
+Replace with best-fit:
+```c
+m = RDCFindModeBest(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);
+```
+where RDCFindModeBest = exact, else largest with HDisplay ≤ H && VDisplay ≤ V.
+
+Hmm, but consider: native = 1281x1025. Best-fit = largest ≤ 1281x1025 = 1280x1024. Good. But what if the EDID native is legitimately 1366x768 and the mode list has 1366x768? Exact match. Good. What if EDID native is 1600x900 (not in list)? Best-fit = largest ≤ 1600x900 = 1440x900 (or 1280x768... area: 1440x900=1.296M, 1366x768=1.05M → 1440x900). The monitor supports 1600x900 but we'd show 1440x900 — not native but reasonable. Could we do better? The monitor's max (1600x900) — the pool has 1600x900! But it's not in the config Modes list → not in pScrn->modes. Hmm.
+
+Wait — this is the "native not in config Modes list" problem again. For robustness, maybe when EDID is valid I should make the mode list include all pool modes (not just config-listed ones)? That's the "pass NULL modeNames" approach I rejected earlier. Hmm.
+
+Actually — hold on. Let me reconsider passing NULL modeNames when EDID is valid. The concern was inferVirtualSize with no M_T_DRIVER modes → fails → virtual stays 0 → grows per-mode. With my Fix B (shrink virtual after), that's fine. And passing NULL modeNames → ALL pool modes validated (subject to refresh/size/ValidMode/memory) → pScrn->modes contains ALL supported modes including 1600x900. Then EDID pruning + native best-fit works perfectly for ANY monitor. And the user's config Modes list is bypassed (when EDID available), which is the modern behavior (EDID is authoritative).
+
+But wait — if I pass NULL modeNames, then the `*M_T_USERDEF` flags aren't set and the config `Modes` list is ignored. Also `validateAllDefaultModes`? With PANORAMIX (default on), the code path: initial `scrp->modes` empty, modeNames NULL → loop finds largest pool mode, adds it, then next largest, etc. So modes = all pool modes sorted descending by area. Then my RDCSelectInitialMode reorders to native. That works!
+
+Hmm, but there's a catch: with modeNames NULL, `xf86ValidateModes` might include modes the config explicitly wanted to exclude (e.g., if a user set a restrictive Modes list to hide bad modes). But when EDID is valid, EDID is authoritative anyway. When EDID is invalid, we still use the config list (current behavior). So: pass modeNames = NULL only when EDID valid.
+
+Wait, but there's another subtlety with NULL modeNames: the pool was built from `QuerySupportedMode` (VESATable). The VESATable includes modes like 1920x1440 (V>1200, filtered by RDCBuildModePool), 720x576, 720x480 (odd modes). Also note the log shows "Not using built-in mode 720x576 / 720x480 (unknown reason)" — these got rejected by ValidMode? (MODE_BAD via RDCValidMode HDisplay==720 check). OK.
+
+Also, with modeNames NULL and EDID valid, `RDCPruneModes` removes modes > EDID max. Then virtual shrinks. This is clean and robust.
+
+Hmm, but hold on — do I even need the config Modes list then? When EDID invalid, use config list (or default). When valid, use all pool modes. This gives the best result. But it's a bigger change to xf86ValidateModes invocation. Let me weigh risk:
+
+Current behavior (post my first fix) with config Modes list + post-prune: works for modes in the list. The user's 1280x1024 IS in the list, so it works — EXCEPT the off-by-one prevented the preferred pinning (Fix A) and virtual is wrong (Fix B).
+
+If I add "pass NULL when EDID valid", it additionally handles native modes not in the config list (e.g., 1600x900). Given the user's monitor is 1280x1024 (in the list), this isn't strictly needed for their case. But it's more robust. Hmm.
+
+Let me be conservative: implement Fix A (best-fit matching) + Fix B (virtual shrink). These directly fix the observed log issues. The "native not in config list" case can be addressed too — let me add the NULL-modeNames-when-EDID-valid as well since it's a small change and clearly more correct. Actually wait — let me think about whether passing NULL modeNames could break anything else in PreInit:
+
+- `xf86ValidateModes` returns count; `if (!i || !pScrn->modes)` check stays.
+- The `Modes` list from config is ignored when EDID valid. The `Display` subsection's Virtual? `pScrn->display->virtualX/virtualY` would be 0 (not configured) → we pass 0 → virtual inferred/grown. If a user DID configure Virtual, it'd be passed... but with modeNames NULL, the mode-vs-virtual check uses the configured virtual. Fine.
+- The log line `*pScrn->display->modes` — debug only.
+
+Hmm, actually — one more consideration. If I pass NULL modeNames, then `pScrn->modes` will include ALL pool modes sorted by area descending. Without the config list, the order is by area: 1920x1200, 1920x1080, 1680x1050, 1600x1200, 1600x900, 1440x900, 1400x1050, 1400x960, 1366x768, 1360x768, 1280x1024, 1280x960, 1280x768, 1280x720, 1024x768, 800x600, 640x480... plus 720x576/720x480 (rejected). Then RDCSelectInitialMode reorders native first. Fine.
+
+Wait, but here's a concern with passing NULL: the fallback "scan unconsidered pool members" logic in xf86ValidateModes... with modeNames NULL and PANORAMIX enabled, the `validateAllDefaultModes` flag stays FALSE initially and the loop:
+```
+for (p = scrp->modes;; p = p->next) {
+    if (p == NULL) {
+        if ((numModes > 0) && !validateAllDefaultModes) break;
+        validateAllDefaultModes = TRUE;
+        ... pick largest unconsidered pool mode r ...
+        if (r == NULL) break;
+        p = xnfcalloc(...); p->name = strdup(r->name); p->type = M_T_USERDEF; append
+    }
+    ...lookup...
+}
+```
+So it iteratively adds the largest unconsidered mode until numModes > 0 and no more... wait: `if ((numModes > 0) && !validateAllDefaultModes) break;` — after the first mode is added and validated (numModes=1), on the next p==NULL: numModes>0 && !validateAllDefaultModes → break! So only ONE mode gets added?? Hmm wait, that can't be right — the log shows multiple modes from the config list.
+
+Hmm, let me re-read. `scrp->modes` is built BEFORE the lookup loop from modeNames (the config list). So with modeNames given, scrp->modes has 11 entries; the lookup loop iterates them. When all 11 are processed, p==NULL → numModes>0 && !validateAllDefaultModes → break. So the extra modes (1280x960, 1280x768, 1024x600, 800x600@60) in the log... where did they come from? They must have been added during the lookup loop when some named modes FAILED validation. Look at the loop: when a named mode fails (`status != MODE_OK`), `continue` moves to next p... but if p is the LAST entry and fails? Then p = p->next = NULL → the `if (p == NULL)` branch: numModes>0 → break. Hmm.
+
+Actually wait, the extra modes in the log (1280x960 etc.) are NOT in the config list. Let me look again at the loop structure:
+
+```c
+    for (p = scrp->modes;; p = p->next) {
+        Bool repeat;
+        if (p == NULL) {
+            if ((numModes > 0) && !validateAllDefaultModes) break;
+            validateAllDefaultModes = TRUE;
+            r = NULL; modeSize = 0;
+            for (q = scrp->modePool; q; q = q->next) {
+                if ((q->prev == NULL) && (q->status == MODE_OK)) {
+                    for (p = scrp->modes; p; p = p->next)
+                        if ((p->status != MODE_OK) && !strcmp(p->name, q->name)) break;
+                    if (p != NULL) q->prev = p;
+                    else {
+                        if (!scrp->monitor->reducedblanking && (q->type & M_T_DEFAULT) && ...) continue;
+                        if (modeSize < q->HDisplay * q->VDisplay) { r = q; modeSize = ...; }
+                    }
+                }
+            }
+            if (r == NULL) break;
+            p = xnfcalloc(...); p->name = strdup(r->name); ... append to scrp->modes
+        }
+        ...
+    }
+```
+
+So when p==NULL and numModes==0 (no mode validated yet — e.g., all config modes failed), it adds the largest unconsidered pool mode. This happens when... the first config mode "1920x1200" fails, then "1920x1080" fails... etc. But 1280x1024 (6th) should validate. Hmm.
+
+But in the log, the FIRST printed mode is 1280x1024 with `*` (USERDEF), and 1280x960 etc. without `*`. So the config-listed modes that validated are 1280x1024, 1280x720, 1024x768, 800x600, 640x480 (all with `*`), and the non-`*` modes 1280x960, 1280x768, 1024x600, 800x600@60 came from... the p==NULL path. But that path only runs when p==NULL, which requires reaching the end of the scrp->modes list. After processing the 11 config entries, p==NULL, numModes=5 (>0) → break. So where did 1280x960 come from?
+
+OH WAIT. I bet the extra modes came from the FAILED entries. Look: when a named mode FAILS, `status != MODE_OK` → `continue` → p = p->next. But some failing modes might be at positions where p becomes NULL in the middle?? No...
+
+Hmm, actually, let me reconsider. Maybe the extra modes were added by the p==NULL path when processing the config list: at some point, `p->status` for a config entry is NOT MODE_OK and there's the `repeat` logic... Actually — the key: after a mode VALIDATES (status==MODE_OK), `repeat = TRUE`. Then `goto lookupNext`-ish continues. When p advances past the last entry, p==NULL → `(numModes > 0) && !validateAllDefaultModes` → break. So extras can't come from there with 5 already validated.
+
+Unless... the extra modes ARE in the config list! Let me check the actual 00-rdc.conf on the TARGET (not the repo's misc/00-rdc.conf). The target's /etc/X11/xorg.conf.d/00-rdc.conf might have a different Modes list that includes 1280x960, 1280x768, 1024x600! That would explain everything. The repo's misc/00-rdc.conf is just the shipped default; the target's config may differ.
+
+So the target's config probably has a Modes list like: "1920x1200" "1920x1080" "1680x1050" "1600x1200" "1440x900" "1280x1024" "1366x768" "1280x720" "1024x768" "800x600" "640x480" "1280x960" "1280x768" "1024x600" "800x600"... whatever. The printed list shows all `*` modes are from config, non-`*` from pool-fallback. Actually the non-`*` ones (1280x960, 1280x768, 1024x600, 800x600@60) — the p==NULL fallback path. This means at some point ALL remaining config entries failed and the fallback kicked in. 
+
+Anyway — the details of where the extra modes come from don't change my plan. The important facts:
+1. EDID native/max = 1281x1025 (off-by-one from the DTD).
+2. Prune worked (modes >1281x1025 removed).
+3. Initial mode = 1280x1024 (correct by luck).
+4. Virtual = 1920x1200 (wrong — should be 1280x1024).
+5. No M_T_PREFERRED set (exact-match failed).
+
+Wait, actually — hmm, point 4. Virtual is 1920x1200. But wait — if the config Modes list didn't have 1920x1200 (if the target's config differs), then virtual would be smaller. The virtual=1920x1200 confirms the target config DOES include 1920x1200 (or the largest mode validated was 1920x1200).
+
+OK so let me now also reconsider: is the off-by-one REALLY from the DTD field, or from my parse? Let me double-check by computing what field value gives 1281. usH = (dtd[2] | ((dtd[4] & 0xF0) << 4)) + 1 = 1281 → (dtd[2] | ((dtd[4]&0xF0)<<4)) = 1280 = 0x500. So dtd[2]=0x00, dtd[4]=0x50. And for V: 1024 = 0x400 → dtd[5]=0x00, dtd[7]=0x40.
+
+For a normal 1280x1024 EDID: H field = 1279 = 0x4FF → dtd[2]=0xFF, dtd[4]=0x40. V field = 1023 = 0x3FF → dtd[5]=0xFF, dtd[7]=0x30.
+
+Our EDID: dtd[2]=0x00, dtd[4]=0x50, dtd[5]=0x00, dtd[7]=0x40. So the monitor's EDID DTD literally says active=1280 (not 1279). This is the monitor's EDID being non-compliant (stores active, not active-1) OR a genuine 1281x1025 mode. Either way, practical native = 1280x1024.
+
+Hmm, actually — wait. Let me reconsider. Maybe the EDID is from a DVI/HDMI connection where the "1280x1024" panel is driven via the EP932M which passes EDID through. Some monitors' EDID DTDs are just odd. It doesn't matter — handle it.
+
+Now, let me ALSO reconsider: `RDCPruneModes(pScrn, 1281, 1025)` kept modes ≤1281x1025, including 1366x768? No — 1366 > 1281 → removed. OK. And it kept 1280x1024. Good. But the max-based prune uses the "bounding box" (maxH, maxV) — for this EDID, max = 1281x1025 (only DTD). Good.
+
+Alright, let me now implement the fixes:
+
+**Fix A**: In `RDCSelectInitialMode`, use a best-fit search for the native mode:
+```c
+/* Exact match first, then the largest mode not exceeding the target size. */
+static DisplayModePtr RDCFindModeBest(ScrnInfoPtr pScrn, int H, int V)
+{
+    DisplayModePtr m, best = NULL;
+    int i;
+
+    m = RDCFindMode(pScrn, H, V);
+    if (m)
+        return m;
+
+    for (m = pScrn->modes; m; m = m->next)
+    {
+        if (m->HDisplay <= H && m->VDisplay <= V)
+        {
+            if (!best || (m->HDisplay * m->VDisplay > best->HDisplay * best->VDisplay))
+                best = m;
+        }
+        if (m->next == pScrn->modes)
+            break;
+    }
+    return best;
+}
+```
+
+And use it for both native and max lookups. Actually — for the max lookup, hmm. `RDCFindMode(usEDIDMaxH, usEDIDMaxV)` as fallback when native isn't found: that was meant to find "the mode at the EDID max". With best-fit, native best-fit handles it. Let me simplify: just use best-fit on native; drop the max lookup. Actually keep both for safety: try native best-fit; the prune handles the rest.
+
+Wait, actually — reconsider: if native=1281x1025 and best-fit gives 1280x1024, great. But what if the monitor's native is 1920x1080 and pool has 1920x1080? Exact match. Good.
+
+**Fix B**: After pruning in `RDCSelectInitialMode`, shrink the virtual size to the largest remaining mode:
+```c
+static void RDCShrinkVirtualSize(ScrnInfoPtr pScrn)
+{
+    DisplayModePtr p = pScrn->modes, largest = NULL;
+
+    if (!p)
+        return;
+    do {
+        if (!largest || (p->HDisplay * p->VDisplay > largest->HDisplay * largest->VDisplay))
+            largest = p;
+        p = p->next;
+    } while (p && p != pScrn->modes);
+
+    if (!largest)
+        return;
+    if (pScrn->xInc <= 0)
+        pScrn->xInc = 8;
+    pScrn->virtualX = ((largest->HDisplay + pScrn->xInc - 1) / pScrn->xInc) * pScrn->xInc;
+    pScrn->virtualY = largest->VDisplay;
+    pScrn->displayWidth = pScrn->virtualX;
+}
+```
+
+Hmm wait — `pScrn->xInc` was set by xf86ValidateModes to 8. But RDCSelectInitialMode runs after, so xInc=8. Use `_VIRTUALX` macro? It's defined locally in xf86ValidateModes. I'll compute inline. Also `displayWidth` — should it be exactly virtualX? For 32bpp, pitch in pixels = virtualX (aligned to 8 = multiple of 256 bits). OK.
+
+Wait, one more consideration: the log shows `Virtual size is 1920x1200 (pitch 1920)`. So displayWidth = 1920 = virtualX. Consistent with displayWidth = virtualX.
+
+Hmm, but actually — should I shrink to the largest REMAINING mode, or should I be smarter? For the EDID case the largest remaining = 1280x1024. For no-EDID, largest remaining = 1920x1200 (unchanged). This gives:
+- EDID: xrandr "current 1280 x 1024", all modes ≤1280x1024. 
+- No-EDID: current 1920x1200, initial mode 1024x768 (panning). Hmm — the no-EDID case still shows "current 1920x1200" in xrandr. That's the pre-existing behavior minus the initial-mode pinning. The user's monitor has working EDID, so the EDID case is what matters.
+
+Wait — hmm, but actually, for the no-EDID case, is it better to shrink virtual to the initial (safe) mode too? If virtual=1920x1200 with initial 1024x768, the DE sees a 1920x1200 screen area and might do weird things (e.g., KDE shows 1920x1200 screen size). But the framebuffer must fit all modes (since we don't prune without EDID). If I shrink virtual to 1024x768, the larger modes can't be selected. Trade-off. Given no-EDID means "monitor unknown", keeping all modes + panning is the safer engineering choice. The user's problem is the EDID case anyway. Keep Fix B as "largest remaining mode".
+
+Hmm, wait — actually, let me reconsider whether shrinking virtual could break the "largest mode" semantics for RandR. In legacy RandR, when the DE picks a mode that's the same as virtual size, no panning. When mode < virtual, panning. After Fix B, virtual == largest mode, so the largest mode has no panning, smaller modes pan. Standard.
+
+Now — one more thing. There's also the concern from the log: the off-by-one in `RDCReadEDID`'s reported native (1281x1025). Should I also fix the parse to handle this? The parse is spec-correct (+1). The issue is the monitor's non-compliant EDID. Fix A handles the downstream matching. But the `CBIOS_SetEDIDToModeTable` + `wCRTDefaultH/V` path uses `CreateEDIDDetailedTimingList` (existing, no +1) → 1280x1024. So the "CBIOS: Setting 1280 x 1024" — correct. And `pRDC->usEDIDNativeH/V` = 1281x1025 (my parse, spec-correct). These are only used for matching. Fine.
+
+Actually — hmm, wait. Let me reconsider one more time whether the DTD parse should use +1 at all, given the existing driver code (`ParseEDIDDetailedTiming`) does NOT add +1. For THIS monitor: field=1280 → existing parse gives 1280 (used for actual timing programming — and it displays correctly at 1280x1024 per the log). My parse gives 1281. The pool mode is named "1280x1024". For matching, I need 1280.
+
+Given real-world EDIDs vary, the most robust approach: parse with +1 (spec), then in the MATCHING step, allow ±1 tolerance. Fix A's best-fit already handles "native 1281 → pick largest ≤ 1281" = 1280. But what if native were 1279 (spec-compliant 1280)? Then best-fit largest ≤1279 would pick 1280? No — 1280 > 1279, so it'd pick 1024x768. That's wrong!
+
+Hmm. So for a spec-compliant EDID (field 1279 → native 1280), exact match works. For this monitor (field 1280 → native 1281), exact fails but best-fit picks 1280 (largest ≤ 1281). Both OK. But there could be a case where native is, say, 1366 (field 1365 → 1366 exact match exists). Fine.
+
+What about a monitor with native 1920x1080 encoded as field 1919 (spec) → native 1920, exact match. Or encoded as 1920 (off-by-one like this monitor) → native 1921, best-fit → largest ≤1921 = 1920x1200? NO — 1920x1200 has H=1920≤1921 and V=1200≤... V comparison: V=1200 ≤ nativeV? nativeV would be 1081 → 1200 > 1081 → not ≤. So best-fit with both-dims-≤ would reject 1920x1200. Largest ≤ (1921, 1081) = 1920x1080. 
+
+So best-fit (both dims ≤) is robust. Good. And exact match first handles spec-compliant EDIDs. 
+
+Let me now also double check the `RDCPruneModes` max for this monitor: maxH=1281, maxV=1025. Modes with H>1281 OR V>1025 removed. 1920x1080: V=1080>1025 → removed. 1366x768: H=1366>1281 → removed. 1280x960: H=1280≤1281, V=960≤1025 → kept. Good.
+
+Now let me implement. Also — should I apply the virtual shrink even when there's no EDID? Fix B runs unconditionally in RDCSelectInitialMode after the branch. For no-EDID: largest remaining = 1920x1200 → virtual stays 1920x1200 (no change). So harmless.
+
+Wait — one edge: for no-EDID, after RDCSetPreferredMode moved 1024x768 to head, the largest mode by area is still 1920x1200 (if present). If the config list doesn't include 1920x1200... then largest = whatever. Fine.
+
+Let me also reconsider: should `RDCSelectInitialMode` shrink virtual BEFORE `xf86SetCrtcForModes`? `xf86SetCrtcForModes` only touches per-mode CRTC params. Virtual not used. Order irrelevant. But currentMode = pScrn->modes after RDCSelectInitialMode. And RDCScreenInit uses virtualX/Y after. So setting virtual inside RDCSelectInitialMode is fine.
+
+Let me write the code now.
+
+Also — I want to double-check the actual current file state of RDCSelectInitialMode to edit it properly.
+
+Actually — one more thing to reconsider. The log line 132: "Virtual size is 1920x1200 (pitch 1920)". This is printed by `xf86PrintModes` (line 1188 in PreInit, AFTER RDCSelectInitialMode and currentMode). So even after my Fix B, xf86PrintModes would print the NEW virtual (1280x1024). Good — that's the visible confirmation.
+
+Let me now implement Fix A + Fix B in rdc_mode.c.
+
+Also — I realize I should double check: does `RDCSetPreferredMode` need to also handle marking M_T_PREFERRED for RandR when the mode is already head? It does (m == head → just sets flag and returns). Good.
+
+Let me also add the `RDCFindModeBest` for the "no native found" fallback and use it for native. And keep the prune. Let me write the edits.
+
+One more consideration about Fix B: `pScrn->displayWidth = pScrn->virtualX`. But wait — there's the `scanLineWidth` requirement about bank alignment (nBitsPerBank). The FB is linear (no banks) — `pBankFormat` for 32bpp. The original call computed 1920 for virtualX 1920. If virtualX=1280, scanLineWidth would return 1280. So displayWidth=1280. Consistent.
+
+Hmm, actually, let me double-check the original displayWidth wasn't different from virtualX due to padding: log shows virtual 1920x1200 pitch 1920. So pitch == virtualX. Good, displayWidth = virtualX.
+
+Let me now also think about whether Fix B should also update `pScrn->fbOffset` or `memPhysBase`? No.
+
+Now, implement.
+
+The log reveals the real problems. Key findings:
+
+1. `RDCReadEDID: native resolution 1281x1025` — the monitor's EDID DTD stores active pixels as `1280/1024` instead of the spec's `active-1` (1279/1023), so my parse yields 1281x1025. The exact-match lookup fails → no mode gets `M_T_PREFERRED`, initial mode only becomes 1280x1024 *by luck* of the prune.
+2. `Virtual size is 1920x1200 (pitch 1920)` — the virtual framebuffer stays at the GPU max because pruning happens *after* `xf86ValidateModes` sized it. So `xrandr` reports `current 1920 x 1200` — the "still max" the DE/user sees, even though the hardware mode is 1280x1024.
+
+Let me fix both: best-fit mode matching (handles the off-by-one) and shrink the virtual size to the largest remaining mode.
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc_mode.c",
+  "limit": 70,
+  "offset": 742
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/src/rdc_mode.c</path>
+<type>file</type>
+<content>
+742:         pRDC->usEDIDMaxH, pRDC->usEDIDMaxV, ucDeviceID, ucI2CPort);
+743:     return TRUE;
+744: }
+745: 
+746: static DisplayModePtr RDCFindMode(ScrnInfoPtr pScrn, int H, int V)
+747: {
+748:     DisplayModePtr p = pScrn->modes;
+749: 
+750:     if (!p)
+751:         return NULL;
+752:     do {
+753:         if (p->HDisplay == H && p->VDisplay == V)
+754:             return p;
+755:         p = p->next;
+756:     } while (p && p != pScrn->modes);
+757:     return NULL;
+758: }
+759: 
+760: static void RDCSetPreferredMode(ScrnInfoPtr pScrn, DisplayModePtr m)
+761: {
+762:     DisplayModePtr head;
+763: 
+764:     if (!m)
+765:         return;
+766:     m->type |= M_T_PREFERRED;
+767:     if (m == pScrn->modes)
+768:         return;
+769: 
+770:     head = pScrn->modes;
+771:     /* unlink m from the circular list */
+772:     m->prev->next = m->next;
+773:     m->next->prev = m->prev;
+774:     /* splice m in front of the head */
+775:     m->prev = head->prev;
+776:     m->next = head;
+777:     head->prev->next = m;
+778:     head->prev = m;
+779:     pScrn->modes = m;
+780: }
+781: 
+782: static void RDCPruneModes(ScrnInfoPtr pScrn, int maxH, int maxV)
+783: {
+784:     DisplayModePtr p, pnext;
+785:     int n = 0, orig, i;
+786: 
+787:     for (p = pScrn->modes; p; p = p->next)
+788:     {
+789:         n++;
+790:         if (p->next == pScrn->modes)
+791:             break;
+792:     }
+793:     if (n == 0)
+794:         return;
+795:     orig = n;
+796: 
+797:     p = pScrn->modes;
+798:     for (i = 0; i < orig && p; i++)
+799:     {
+800:         pnext = p->next;
+801:         if ((p->HDisplay > maxH || p->VDisplay > maxV) && n > 1)
+802:         {
+803:             xf86DrvMsgVerb(pScrn->scrnIndex, X_PROBED, InfoLevel,
+804:                            "Removing mode \"%s\" (larger than monitor's %dx%d)\n",
+805:                            p->name ? p->name : "", maxH, maxV);
+806:             if (pScrn->modes == p)
+807:                 pScrn->modes = pnext;
+808:             p->prev->next = p->next;
+809:             p->next->prev = p->prev;
+810:             if (p->Private)
+811:                 xfree(p->Private);
+
+(Showing lines 742-811 of 895. Use offset=812 to continue.)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 6.9s)
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc_mode.c",
+  "newString": "static DisplayModePtr RDCFindMode(ScrnInfoPtr pScrn, int H, int V)\n{\n    DisplayModePtr p = pScrn->modes;\n\n    if (!p)\n        return NULL;\n    do {\n        if (p->HDisplay == H && p->VDisplay == V)\n            return p;\n        p = p->next;\n    } while (p && p != pScrn->modes);\n    return NULL;\n}\n\n/* Exact match first; otherwise the largest mode that fits inside the target\n * size.  Some monitors encode the DTD active pixels without the spec's -1,\n * so the parsed native size can be off by one (e.g. 1281x1025 for a\n * 1280x1024 panel); this keeps the initial mode from falling back to the\n * GPU maximum in that case. */\nstatic DisplayModePtr RDCFindModeBest(ScrnInfoPtr pScrn, int H, int V)\n{\n    DisplayModePtr m, best = NULL;\n\n    m = RDCFindMode(pScrn, H, V);\n    if (m)\n        return m;\n\n    for (m = pScrn->modes; m; m = m->next)\n    {\n        if (m->HDisplay <= H && m->VDisplay <= V)\n        {\n            if (!best || (m->HDisplay * m->VDisplay > best->HDisplay * best->VDisplay))\n                best = m;\n        }\n        if (m->next == pScrn->modes)\n            break;\n    }\n    return best;\n}\n\n/* Resize the virtual framebuffer to the largest mode that remains in the\n * list.  xf86ValidateModes sized it from the first (largest) requested mode\n * before EDID pruning ran, so without this the RandR screen size stays at\n * the GPU maximum (e.g. 1920x1200) and the DE reports it as \"current\". */\nstatic void RDCShrinkVirtualSize(ScrnInfoPtr pScrn)\n{\n    DisplayModePtr p = pScrn->modes, largest = NULL;\n\n    if (!p)\n        return;\n    do {\n        if (!largest || (p->HDisplay * p->VDisplay > largest->HDisplay * largest->VDisplay))\n            largest = p;\n        p = p->next;\n    } while (p && p != pScrn->modes);\n\n    if (!largest)\n        return;\n    if (pScrn->xInc <= 0)\n        pScrn->xInc = 8;\n    pScrn->virtualX = ((largest->HDisplay + pScrn->xInc - 1) / pScrn->xInc) * pScrn->xInc;\n    pScrn->virtualY = largest->VDisplay;\n    pScrn->displayWidth = pScrn->virtualX;\n    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,\n        \"RDCShrinkVirtualSize: virtual size %dx%d (pitch %d)\\n\",\n        pScrn->virtualX, pScrn->virtualY, pScrn->displayWidth);\n}",
+  "oldString": "static DisplayModePtr RDCFindMode(ScrnInfoPtr pScrn, int H, int V)\n{\n    DisplayModePtr p = pScrn->modes;\n\n    if (!p)\n        return NULL;\n    do {\n        if (p->HDisplay == H && p->VDisplay == V)\n            return p;\n        p = p->next;\n    } while (p && p != pScrn->modes);\n    return NULL;\n}"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 6.8s)
+
+Now update `RDCSelectInitialMode` to use best-fit matching and shrink the virtual size:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc_mode.c",
+  "newString": "    if (pRDC->bEDIDValid)\n    {\n        /* 2. EDID is available: start at the monitor's native resolution and\n         *    drop modes it cannot physically display. */\n        m = RDCFindModeBest(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);\n        if (!m)\n            m = RDCFindModeBest(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);\n        if (m)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,\n                \"RDCSelectInitialMode: using EDID native mode \\\"%s\\\"\\n\", m->name);\n            RDCSetPreferredMode(pScrn, m);\n        }\n        RDCPruneModes(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);\n    }\n    else\n    {\n        /* 3. No EDID: pick a safe resolution instead of the maximum, so the\n         *    display is not driven out of range on every server start. */\n        for (p = pScrn->modes; p; p = p->next)\n        {\n            if (p->HDisplay <= 1024 && p->VDisplay <= 768)\n            {\n                if (!m || (p->HDisplay * p->VDisplay > m->HDisplay * m->VDisplay))\n                    m = p;\n            }\n            if (p->next == pScrn->modes)\n                break;\n        }\n        if (m)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,\n                \"RDCSelectInitialMode: no EDID, using safe default mode \\\"%s\\\"\\n\", m->name);\n            RDCSetPreferredMode(pScrn, m);\n        }\n    }\n\n    /* Keep the virtual framebuffer in sync with the surviving mode list so\n     * the RandR screen size matches what the monitor can display. */\n    RDCShrinkVirtualSize(pScrn);\n\nexit:\n    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, \"==Exit RDCSelectInitialMode()== \\n\");\n}",
+  "oldString": "    if (pRDC->bEDIDValid)\n    {\n        /* 2. EDID is available: start at the monitor's native resolution and\n         *    drop modes it cannot physically display. */\n        m = RDCFindMode(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);\n        if (!m)\n            m = RDCFindMode(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);\n        if (m)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,\n                \"RDCSelectInitialMode: using EDID native mode \\\"%s\\\"\\n\", m->name);\n            RDCSetPreferredMode(pScrn, m);\n        }\n        RDCPruneModes(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);\n    }\n    else\n    {\n        /* 3. No EDID: pick a safe resolution instead of the maximum, so the\n         *    display is not driven out of range on every server start. */\n        for (p = pScrn->modes; p; p = p->next)\n        {\n            if (p->HDisplay <= 1024 && p->VDisplay <= 768)\n            {\n                if (!m || (p->HDisplay * p->VDisplay > m->HDisplay * m->VDisplay))\n                    m = p;\n            }\n            if (p->next == pScrn->modes)\n                break;\n        }\n        if (m)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,\n                \"RDCSelectInitialMode: no EDID, using safe default mode \\\"%s\\\"\\n\", m->name);\n            RDCSetPreferredMode(pScrn, m);\n        }\n    }\n\nexit:\n    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, \"==Exit RDCSelectInitialMode()== \\n\");\n}"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 11.6s)
+
+_Thinking:_
+
+Wait — I need to double-check the `goto exit` path: when DefaultMode is set and found, we `goto exit` which now skips `RDCShrinkVirtualSize`. Hmm — should the virtual shrink also apply in the DefaultMode case? If the user pins DefaultMode to 1024x768 but the list still contains 1920x1200, the virtual stays 1920x1200. That's fine (framebuffer must fit the larger modes). Actually — for consistency, when DefaultMode is used, we don't prune, so virtual should stay at the largest mode. So skipping shrink is CORRECT there. Good.
+
+Now — there's a subtle issue with `RDCShrinkVirtualSize` and the log message using DefaultLevel — fine.
+
+Wait, but there's a deeper concern with `RDCShrinkVirtualSize` setting `pScrn->displayWidth = pScrn->virtualX`. Let me reconsider: `displayWidth` is used in `RDCScreenInit` via `FBMemBox.x2 = pScrn->displayWidth` and in `vFillRDCModeInfo` → `ScreenPitch = displayWidth * Bpp`. And `RDCAdjustFrame` computes `base = rot_y * ScreenPitch + rot_x * Bpp`. Since FB is linear, pitch = virtualX pixels * Bpp bytes. Consistent.
+
+But hold on — there's one more consumer: `xf86InitFBManagerLinear(pScreen, areaoffset, size)`:
+```c
+int cpp = pScrn->bitsPerPixel / 8;
+int areaoffset = (pScrn->virtualY) * pScrn->displayWidth; 
+int size = (FBMemBox.y2 - (pScrn->virtualY/cpp)) * pScrn->displayWidth;
+```
+With virtualY=1024, displayWidth=1280, cpp=4: areaoffset = 1024*1280 = 1.31M pixels... wait that's in PIXELS (areaoffset is multiplied by cpp? Let me check: `areaoffset = virtualY * displayWidth` — in pixels, and the FB manager expects... hmm, actually looking at xf86InitFBManagerLinear(pScreen, areaoffset, size) — areaoffset in BYTES? The original code: `int areaoffset = (pScrn->virtualY) * pScrn->displayWidth;` — that's pixels, not bytes. But it's the driver's own code, and it worked with 1920x1200. With new values it scales correctly. OK — not my concern; the driver's arithmetic is consistent as long as I update virtualX/Y/displayWidth together, which I do.
+
+Actually, wait — there's a real concern: `FBMemBox.y2 = (AvailFBSize / (pScrn->displayWidth * bpp)) - 1`. With smaller displayWidth, y2 grows (more rows fit). Fine.
+
+OK. Now let me also reconsider the `RDCFindModeBest` for the max fallback when native best-fit fails. For this monitor: native best-fit = 1280x1024 (found). Good.
+
+Now — the bigger question remains: does this actually fix the user's "still max" issue? The log showed the driver DID set 1280x1024 as the mode, but virtual was 1920x1200. With Fix B, virtual becomes 1280x1024. Then `xrandr` shows "current 1280 x 1024" and the DE sees a 1280x1024 screen. And Fix A marks 1280x1024 as M_T_PREFERRED + first in list, so the DE's preferred-mode logic picks it too.
+
+Let me also double check the DE behavior once more with the fixed list: modes = [1280x1024(PREF), 1280x720, 1024x768, 800x600, 640x480, 1280x960, 1280x768, 1024x600, 800x600@60]. RandR: preferred modes first → 1280x1024 first, then the rest. DE picks 1280x1024. Screen size = virtual = 1280x1024. 
+
+Now, let me rebuild and re-run my standalone tests with the new functions (RDCFindModeBest, RDCShrinkVirtualSize). Let me update the test to include best-fit and virtual shrink logic.
+
+Actually, let me also reconsider whether the off-by-one could be addressed at the source (in RDCParseEDID) instead, by rounding. No — the parse is spec-correct; the best-fit handles the practical case. Keep.
+
+Let me rebuild first.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && make 2>&1 | grep -iE \"error|warning\" | grep -vE \"xf86PciInfo.h is deprecated|rdc_vgatool.c|rdc_extension.c|CInt10.c\"; echo \"grep_exit=$?\"; ls -la src/.libs/rdcm15_drv.so",
+  "description": "Rebuild with best-fit + virtual shrink",
+  "timeout": 300000
+}
+```
+
+**Output:**
+```
+grep_exit=1
+-rwxr-xr-x 1 liaronce liaronce 1174344  8月19日 21:22 src/.libs/rdcm15_drv.so
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 6.1s)
+
+_Thinking:_
+
+Clean build (grep_exit=1 means no matches; only pre-existing warnings in untouched files remain, and the module rebuilt).
+
+Now let me update my standalone test to cover the new best-fit matching and virtual-shrink logic.
+
+Now let me extend the standalone tests to cover best-fit matching and the virtual shrink:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/tmp/kilo/test_modes.c",
+  "newString": "static void prune(int maxH, int maxV) {\n    Mode *p, *pnext;\n    int n = 0, orig, i;\n    for (p = head; p; p = p->next) { n++; if (p->next == head) break; }\n    if (n == 0) return;\n    orig = n;\n    p = head;\n    for (i = 0; i < orig && p; i++) {\n        pnext = p->next;\n        if ((p->HDisplay > maxH || p->VDisplay > maxV) && n > 1) {\n            if (head == p) head = pnext;\n            p->prev->next = p->next;\n            p->next->prev = p->prev;\n            if (p->Private) free(p->Private);\n            free(p->name); free(p);\n            n--;\n        }\n        p = pnext;\n    }\n}\n\nstatic Mode *find_best(int H, int V) {\n    Mode *m, *best = NULL;\n    for (m = head; m; m = m->next) {\n        if (m->HDisplay == H && m->VDisplay == V)\n            return m;\n        if (m->next == head) break;\n    }\n    for (m = head; m; m = m->next) {\n        if (m->HDisplay <= H && m->VDisplay <= V)\n            if (!best || (m->HDisplay * m->VDisplay > best->HDisplay * best->VDisplay))\n                best = m;\n        if (m->next == head) break;\n    }\n    return best;\n}\n\nstatic void shrink(int *vx, int *vy, int *pitch) {\n    Mode *m, *largest = NULL;\n    for (m = head; m; m = m->next) {\n        if (!largest || (m->HDisplay * m->VDisplay > largest->HDisplay * largest->VDisplay))\n            largest = m;\n        if (m->next == head) break;\n    }\n    if (!largest) return;\n    *vx = ((largest->HDisplay + 7) / 8) * 8;\n    *vy = largest->VDisplay;\n    *pitch = *vx;\n    printf(\"  shrink -> virtual %dx%d pitch %d\\n\", *vx, *vy, *pitch);\n}",
+  "oldString": "static void prune(int maxH, int maxV) {\n    Mode *p, *pnext;\n    int n = 0, orig, i;\n    for (p = head; p; p = p->next) { n++; if (p->next == head) break; }\n    if (n == 0) return;\n    orig = n;\n    p = head;\n    for (i = 0; i < orig && p; i++) {\n        pnext = p->next;\n        if ((p->HDisplay > maxH || p->VDisplay > maxV) && n > 1) {\n            if (head == p) head = pnext;\n            p->prev->next = p->next;\n            p->next->prev = p->prev;\n            if (p->Private) free(p->Private);\n            free(p->name); free(p);\n            n--;\n        }\n        p = pnext;\n    }\n}"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 6.4s)
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/tmp/kilo/test_modes.c",
+  "newString": "    /* prune the only mode: must keep it (n>1 guard) */\n    prune(320, 240);\n    dump(\"after prune(max 320x240) on single node\");\n    fail |= check_list();\n    if (!head) { printf(\"  FAIL: list became empty\\n\"); fail = 1; }\n\n    /* EDID off-by-one case from the target log: native parsed as 1281x1025,\n     * list contains 1280x1024, virtual was 1920x1200. */\n    head = NULL;\n    add(1920, 1200, \"1920x1200\");\n    add(1920, 1080, \"1920x1080\");\n    add(1680, 1050, \"1680x1050\");\n    add(1440, 900, \"1440x900\");\n    add(1280, 1024, \"1280x1024\");\n    add(1366, 768, \"1366x768\");\n    add(1280, 720, \"1280x720\");\n    add(1024, 768, \"1024x768\");\n    add(800, 600, \"800x600\");\n    add(640, 480, \"640x480\");\n    m = find_best(1281, 1025);\n    if (!m || m->HDisplay != 1280 || m->VDisplay != 1024) { printf(\"  FAIL: best-fit native not 1280x1024 (got %s)\\n\", m ? m->name : \"NULL\"); fail = 1; }\n    else {\n        set_pref(m);\n        dump(\"off-by-one native best-fit\");\n        prune(1281, 1025);\n        dump(\"after prune(max 1281x1025)\");\n        fail |= check_list();\n        if (head->HDisplay != 1280 || head->VDisplay != 1024) { printf(\"  FAIL: head not 1280x1024\\n\"); fail = 1; }\n        {\n            int vx = 1920, vy = 1200, pitch = 1920;\n            shrink(&vx, &vy, &pitch);\n            if (vx != 1280 || vy != 1024 || pitch != 1280) { printf(\"  FAIL: virtual not 1280x1024 (got %dx%d pitch %d)\\n\", vx, vy, pitch); fail = 1; }\n        }\n    }\n\n    /* spec-compliant EDID: exact native 1920x1080 match */\n    head = NULL;\n    add(1920, 1200, \"1920x1200\");\n    add(1920, 1080, \"1920x1080\");\n    add(1280, 1024, \"1280x1024\");\n    m = find_best(1920, 1080);\n    if (!m || strcmp(m->name, \"1920x1080\")) { printf(\"  FAIL: exact native not found\\n\"); fail = 1; }\n\n    printf(fail ? \"TESTS FAILED\\n\" : \"TESTS PASSED\\n\");\n    return fail;\n}",
+  "oldString": "    /* prune the only mode: must keep it (n>1 guard) */\n    prune(320, 240);\n    dump(\"after prune(max 320x240) on single node\");\n    fail |= check_list();\n    if (!head) { printf(\"  FAIL: list became empty\\n\"); fail = 1; }\n\n    printf(fail ? \"TESTS FAILED\\n\" : \"TESTS PASSED\\n\");\n    return fail;\n}"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.2s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo && gcc -Wall -Wextra -o test_modes test_modes.c && ./test_modes",
+  "description": "Run extended mode-list tests"
+}
+```
+
+**Output:**
+```
+initial: 1920x1200[   ] 1920x1080[   ] 1366x768[   ] 1024x768[   ] 800x600[   ] 640x480[   ]
+after set_pref(native): 1366x768[PREF] 1920x1200[   ] 1920x1080[   ] 1024x768[   ] 800x600[   ] 640x480[   ]
+  list ok, 6 nodes
+after prune(max 1366x768): 1366x768[PREF] 1024x768[   ] 800x600[   ] 640x480[   ]
+  list ok, 4 nodes
+no-edid fallback: 1024x768[PREF] 1920x1200[   ] 1280x1024[   ] 800x600[   ] 640x480[   ]
+  list ok, 5 nodes
+after prune(max 640x480): 640x480[   ]
+  list ok, 1 nodes
+after prune(max 320x240) on single node: 640x480[   ]
+  list ok, 1 nodes
+off-by-one native best-fit: 1280x1024[PREF] 1920x1200[   ] 1920x1080[   ] 1680x1050[   ] 1440x900[   ] 1366x768[   ] 1280x720[   ] 1024x768[   ] 800x600[   ] 640x480[   ]
+after prune(max 1281x1025): 1280x1024[PREF] 1280x720[   ] 1024x768[   ] 800x600[   ] 640x480[   ]
+  list ok, 5 nodes
+  shrink -> virtual 1280x1024 pitch 1280
+TESTS PASSED
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 17.5s)
+
+_Thinking:_
+
+All tests pass, including the exact off-by-one scenario from the target log: native 1281x1025 → best-fit 1280x1024 marked PREF, prune removes everything >1281x1025, virtual shrinks to 1280x1024 with pitch 1280.
+
+Now, one more thing to verify in the real code: `pScrn->xInc` — is it a field of ScrnInfoRec? Yes, `scrp->xInc` exists (xf86ValidateModes sets it). Good.
+
+Let me also reconsider the interplay between the shrunk virtual size and `RDCScreenInit`'s `FBMemBox`/`xf86InitFBManager`. Let me re-read that part with the new numbers:
+- displayWidth = 1280, virtualY = 1024, bitsPerPixel = 32, bpp = 4.
+- AvailFBSize = 58687488 bytes.
+- FBMemBox.x1=0, y1=0, x2=1280, y2 = 58687488/(1280*4) - 1 = 11462 - 1 = 11461.
+- areaoffset = virtualY * displayWidth = 1024 * 1280 = 1310720.
+- size = (11461 - 1024/4) * 1280 = (11461 - 256) * 1280 = 11205 * 1280 = 14342400.
+- xf86InitFBManagerLinear(pScreen, 1310720, 14342400).
+
+These are in "pixels" units as the original code does (it's the driver's existing convention). Fine — consistent arithmetic.
+
+Now — is there anything in the log that suggests a further issue? Let me reconsider the log once more:
+
+- Line 132: "Virtual size is 1920x1200 (pitch 1920)" — will become 1280x1024 (pitch 1280) after Fix B.
+- Line 133: `*Built-in mode "1280x1024"` — head is 1280x1024 (good). After Fix A, it will ALSO have M_T_PREFERRED, but the printed `*` prefix is M_T_USERDEF (already present). The PREF flag won't be visible in the print, but RandR will honor it.
+- Lines 143-149: the fallback modes 1280x960, 1280x768, 1024x600, 800x600@60 — these are ≤ max 1281x1025, kept. They'll be offered. 1280x960 is fine (monitor may support it). OK.
+
+Wait — actually, hold on. Let me reconsider whether the extra fallback modes (1280x960, 1280x768, 1024x600, 800x600@60) that appear at the END of the list could cause a problem. In the log they appear AFTER the config modes. They're all ≤ 1281x1025 so they stay. They're offered via RandR. If the user/DE picks 1280x960 (which the monitor might not support — it's only 1280x1024), the monitor may show out-of-range. Hmm. Should the prune also remove modes NOT listed in EDID (exact resolution match)? That would be tighter filtering. 
+
+For this monitor, EDID has only ONE timing (the 1280x1024 DTD, per max=native=1281x1025). So strictly, only 1280x1024 should be offered! The standard timings were apparently all unused (b0=0 or 0x01) in this EDID. So the monitor's EDID says it only supports 1280x1024. Then the prune-by-max (1281x1025) keeps 1280x960, 1280x768, 1280x720, 1024x768, 800x600, 640x480 — modes the EDID doesn't list but that are within the max size.
+
+Is keeping them a problem? If the user switches to 1280x960, the monitor might reject it (out of range) → black screen. But typically a 1280x1024 monitor DOES support 1280x960, 1280x768, 1024x768, 800x600, 640x480 at 60Hz (the scaler handles VESA modes). The RDC VBIOS mode table includes timings for all these, and they're standard VESA modes any LCD panel accepts. So keeping them is generally safe and useful (user can pick lower res). Only modes larger than the panel would be a problem, and those are pruned.
+
+So max-based pruning is the right granularity. Good.
+
+Now — let me reconsider the earlier concern about whether the DE would pick "max". With Fix B, the virtual is 1280x1024, so `xrandr` shows "current 1280 x 1024". The DE sees the output's preferred mode = 1280x1024 (marked PREF). Everything consistent.
+
+But wait — I want to double-check one thing: after `RDCShrinkVirtualSize` sets virtualX=1280, does `xf86SetCrtcForModes` (called BEFORE RDCSelectInitialMode) matter? It was already called with the pre-shrink state, but it only computes per-mode Crtc params — unaffected by virtual. And it's called before my reorder... wait, in PreInit the order is:
+```
+xf86SetCrtcForModes(pScrn, INTERLACE_HALVE_V);   // line 1190
+RDCSelectInitialMode(pScrn);                       // my call
+pScrn->currentMode = pScrn->modes;
+```
+RDCSelectInitialMode now also shrinks virtual. Since xf86SetCrtcForModes doesn't use virtual, order is fine.
+
+Hmm — wait, actually there's one more consumer I should double check: `xf86PruneDriverModes` was called at line ~1174 (before xf86SetCrtcForModes). It frees the modePool. My RDCSelectInitialMode runs after — it doesn't touch the pool. Good.
+
+Now, let me reconsider whether `RDCShrinkVirtualSize` could ever INCREASE the virtual size. If the largest remaining mode is bigger than the current virtual (impossible — virtual was set to the largest validated mode, and prune only removes modes)... except the no-EDID case: no prune, largest = the mode virtual was set from = no change. So it never grows. Actually wait — could pScrn->modes contain a mode LARGER than virtual? In the fallback path (p==NULL in xf86ValidateModes), modes are added with `newVirtX = p->HDisplay` etc. so virtual grows to fit. So virtual ≥ all modes. Shrink only shrinks. Good.
+
+One more: `RDCShrinkVirtualSize` aligns virtualX to xInc (8). For a largest mode of 1280 → 1280. For 1366 → align to 8 → 1368. Then displayWidth = 1368. Hmm — but the mode is 1366. The FB pitch 1368 ≥ 1366. Fine. And `_VIRTUALX` in xf86ValidateModes does the same. OK.
+
+Now let me also verify the whole driver still compiles and run the edid tests again (unchanged). Then final diff review.
+
+Actually — let me reconsider one more potential issue in the log that I might have missed: the "Not using built-in mode 720x576 / 720x480 (unknown reason)" — that's RDCValidMode returning MODE_BAD for HDisplay==720. Pre-existing behavior. Not related.
+
+Also, line 150: "DPI set to (96, 96)" — from xf86SetDpi. Fine.
+
+Let me now also double check: the user said the monitor is "1280x1024@60Hz". The log's modeline for 1280x1024: "108.00 1280 0 0 1688 1024 0 0 1066 (64.0 kHz)" — refresh 60Hz. Good.
+
+Now, let me build once more and view the final diff for rdc_mode.c changes.
+
+All tests pass, including the exact off-by-one scenario from the log. Let me verify the full build once more and review the final state of the changed function:
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && make 2>&1 | grep -cE \"error\" ; echo \"---\"; git diff --stat",
+  "description": "Verify clean build and show diff stat",
+  "timeout": 120000
+}
+```
+
+**Output:**
+```
+0
+---
+ src/rdc_mode.c | 62 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 60 insertions(+), 2 deletions(-)
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.8s)
+
+_Thinking:_
+
+Wait, git diff --stat only shows rdc_mode.c changed 60 insertions? That means the earlier changes (rdc.h, rdc_driver.c, AGENTS.md, misc/00-rdc.conf) were already committed? No — earlier `git status` showed 4 modified files. But now diff --stat shows only rdc_mode.c... 
+
+Oh wait — maybe the user committed my earlier changes between sessions? Let me check git status and log.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && git status --short && echo --- && git log --oneline -3",
+  "description": "Check git status and recent commits"
+}
+```
+
+**Output:**
+```
+ M src/rdc_mode.c
+---
+93b93ac fix: always set to max resolution when starting DE
+eb14ee1 docs: fix typo
+f59ee6b misc: add two vbios dump files
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.5s)
+
+_Thinking:_
+
+The user committed my earlier changes as commit `93b93ac` ("fix: always set to max resolution when starting DE") and now only `src/rdc_mode.c` is modified (my latest fixes). Good.
+
+Let me review the full current diff of rdc_mode.c to make sure everything is coherent.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && git diff src/rdc_mode.c",
+  "description": "Show latest rdc_mode.c diff"
+}
+```
+
+**Output:**
+```
+diff --git a/src/rdc_mode.c b/src/rdc_mode.c
+index 92440d4..c9cbe94 100644
+--- a/src/rdc_mode.c
++++ b/src/rdc_mode.c
+@@ -757,6 +757,60 @@ static DisplayModePtr RDCFindMode(ScrnInfoPtr pScrn, int H, int V)
+     return NULL;
+ }
+ 
++/* Exact match first; otherwise the largest mode that fits inside the target
++ * size.  Some monitors encode the DTD active pixels without the spec's -1,
++ * so the parsed native size can be off by one (e.g. 1281x1025 for a
++ * 1280x1024 panel); this keeps the initial mode from falling back to the
++ * GPU maximum in that case. */
++static DisplayModePtr RDCFindModeBest(ScrnInfoPtr pScrn, int H, int V)
++{
++    DisplayModePtr m, best = NULL;
++
++    m = RDCFindMode(pScrn, H, V);
++    if (m)
++        return m;
++
++    for (m = pScrn->modes; m; m = m->next)
++    {
++        if (m->HDisplay <= H && m->VDisplay <= V)
++        {
++            if (!best || (m->HDisplay * m->VDisplay > best->HDisplay * best->VDisplay))
++                best = m;
++        }
++        if (m->next == pScrn->modes)
++            break;
++    }
++    return best;
++}
++
++/* Resize the virtual framebuffer to the largest mode that remains in the
++ * list.  xf86ValidateModes sized it from the first (largest) requested mode
++ * before EDID pruning ran, so without this the RandR screen size stays at
++ * the GPU maximum (e.g. 1920x1200) and the DE reports it as "current". */
++static void RDCShrinkVirtualSize(ScrnInfoPtr pScrn)
++{
++    DisplayModePtr p = pScrn->modes, largest = NULL;
++
++    if (!p)
++        return;
++    do {
++        if (!largest || (p->HDisplay * p->VDisplay > largest->HDisplay * largest->VDisplay))
++            largest = p;
++        p = p->next;
++    } while (p && p != pScrn->modes);
++
++    if (!largest)
++        return;
++    if (pScrn->xInc <= 0)
++        pScrn->xInc = 8;
++    pScrn->virtualX = ((largest->HDisplay + pScrn->xInc - 1) / pScrn->xInc) * pScrn->xInc;
++    pScrn->virtualY = largest->VDisplay;
++    pScrn->displayWidth = pScrn->virtualX;
++    xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
++        "RDCShrinkVirtualSize: virtual size %dx%d (pitch %d)\n",
++        pScrn->virtualX, pScrn->virtualY, pScrn->displayWidth);
++}
++
+ static void RDCSetPreferredMode(ScrnInfoPtr pScrn, DisplayModePtr m)
+ {
+     DisplayModePtr head;
+@@ -857,9 +911,9 @@ void RDCSelectInitialMode(ScrnInfoPtr pScrn)
+     {
+         /* 2. EDID is available: start at the monitor's native resolution and
+          *    drop modes it cannot physically display. */
+-        m = RDCFindMode(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);
++        m = RDCFindModeBest(pScrn, pRDC->usEDIDNativeH, pRDC->usEDIDNativeV);
+         if (!m)
+-            m = RDCFindMode(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);
++            m = RDCFindModeBest(pScrn, pRDC->usEDIDMaxH, pRDC->usEDIDMaxV);
+         if (m)
+         {
+             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel,
+@@ -890,6 +944,10 @@ void RDCSelectInitialMode(ScrnInfoPtr pScrn)
+         }
+     }
+ 
++    /* Keep the virtual framebuffer in sync with the surviving mode list so
++     * the RandR screen size matches what the monitor can display. */
++    RDCShrinkVirtualSize(pScrn);
++
+ exit:
+     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, DefaultLevel, "==Exit RDCSelectInitialMode()== \n");
+ }
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.9s)
+
+_Thinking:_
+
+The diff looks good. Now let me reconsider whether there are any remaining issues.
+
+One thing I want to reconsider: **does the DE actually get the virtual size right?** In legacy RandR, the "screen size" comes from `pScrn->virtualX/virtualY` via `xf86RandR12`'s screen size. Let me verify that RandR uses virtualX/Y for the screen geometry. In xf86RandR12.c, `xf86RandR12SetScreenSize`/`xf86RandR12Init12`... For legacy drivers without CRTC, `RRScreenSizeGet` uses `pScrn->virtualX, virtualY`. Let me quickly check.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -n \"virtualX\\|virtualY\" hw/xfree86/modes/xf86RandR12.c | head -15",
+  "description": "Check how RandR uses virtual size"
+}
+```
+
+**Output:**
+```
+44:    int virtualX;
+45:    int virtualY;
+464:    if (randrp->virtualX == -1 || randrp->virtualY == -1) {
+465:        randrp->virtualX = scrp->virtualX;
+466:        randrp->virtualY = scrp->virtualY;
+524:        scrp->virtualX = randrp->virtualX;
+525:        scrp->virtualY = randrp->virtualY;
+528:        scrp->virtualX = mode->HDisplay;
+529:        scrp->virtualY = mode->VDisplay;
+534:        pScreen->width = scrp->virtualY;
+535:        pScreen->height = scrp->virtualX;
+540:        pScreen->width = scrp->virtualX;
+541:        pScreen->height = scrp->virtualY;
+557:        scrp->virtualX = pScreen->width = oldWidth;
+558:        scrp->virtualY = pScreen->height = oldHeight;
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 67.9s)
+
+_Thinking:_
+
+Confirmed: RandR's initial virtual size comes from `scrp->virtualX/virtualY` (line 465-466). So after `RDCShrinkVirtualSize` sets virtualX/Y to 1280x1024, RandR reports the screen as 1280x1024.
+
+Also at line 524-529: when a mode change happens via `xf86RandR12SetMode`, `scrp->virtualX/virtualY` get set to the mode's HDisplay/VDisplay (or randr virtual). So when the DE picks 1280x1024 (the preferred mode), the screen size matches.
+
+Now, let me also double-check one potential issue: `pScreen->width/height` initialization. In RDCScreenInit, `fbScreenInit(pScreen, ..., pScrn->virtualX, pScrn->virtualY, ...)` creates the screen at 1280x1024. RandR then reads `scrp->virtualX` = 1280. Consistent.
+
+Now — the important remaining question: does this fully resolve the user's complaint? Let me reason through the fixed boot sequence for this monitor:
+
+1. PreInit: RDCReadEDID → native=1281x1025, max=1281x1025 (parsed from the non-compliant DTD).
+2. Mode pool built from VESATable (all VESA modes ≤1920x1200, ≤60Hz, fit FB).
+3. xf86ValidateModes with config Modes list → validates modes, virtual grows to 1920x1200 (first validated = 1920x1200).
+4. xf86PruneDriverModes → removes non-OK modes, frees pool.
+5. RDCSelectInitialMode:
+   - EDID valid → RDCFindModeBest(1281, 1025) → exact fail → largest ≤1281x1025 = 1280x1024 → RDCSetPreferredMode (PREF + first).
+   - RDCPruneModes(1281, 1025) → removes 1920x1200, 1920x1080, 1680x1050, 1600x1200, 1440x900, 1366x768.
+   - RDCShrinkVirtualSize → largest remaining = 1280x1024 → virtual = 1280x1024, pitch = 1280.
+6. currentMode = 1280x1024. 
+7. ScreenInit → RDCModeInit(1280x1024) → "CBIOS: Setting 1280 x 1024 resolution".
+8. RandR: screen 1280x1024, preferred mode 1280x1024.
+9. DE starts → sees preferred 1280x1024, screen 1280x1024 → shows 1280x1024.
+
+This resolves both the visible mode and the reported screen size.
+
+Now — should I also fix the `RDCReadEDID` log to not be misleading? It prints "native resolution 1281x1025" which is the parsed value. That's accurate for the parse. Fine.
+
+Let me also reconsider: is there value in ALSO matching the EDID exactly for modes like the case where a monitor reports native 1920x1080 but the DTD is off by one (1921x1081)? best-fit handles it (largest ≤ 1921x1081 = 1920x1080). Good.
+
+Now, one more potential edge: `RDCFindModeBest` with target (H=1281, V=1025) — exact fail; the loop then finds the largest mode with H≤1281 && V≤1025. Modes: 1280x1024 (1280*1024=1310720), 1280x960 (1228800), 1366x768 (1049088), 1280x720 (921600), 1024x768, 800x600, 640x480. Largest area = 1280x1024. Correct.
+
+Wait — 1366x768 area = 1049088, 1280x1024 = 1310720. So 1280x1024 wins. Good. And 1366x768: H=1366 > 1281 → excluded anyway.
+
+Now, let me make sure the final code compiles cleanly and also re-verify the complete rdc_mode.c new-function area once more. Build passed already. Let me also run the edid test again (no changes to that logic, but quick sanity).
+
+Actually, I realize I should double check one thing about `RDCShrinkVirtualSize`: `pScrn->xInc`. Is `xInc` part of ScrnInfoRec accessible? Yes (used in xf86ValidateModes as scrp->xInc). And it's set to 8 by xf86ValidateModes before our call. My guard `if (pScrn->xInc <= 0) pScrn->xInc = 8;` is safe.
+
+One concern: `pScrn->virtualX` is `int`, `pScrn->displayWidth` is `int`. Assigning int values — fine.
+
+Now let me also update the docs/AGENTS.md to mention the virtual shrink? The AGENTS.md invariant text I added says "RDCSelectInitialMode() reorders pScrn->modes after validation so the server starts at the monitor's EDID native resolution (modes larger than the EDID max are dropped)." I should add the virtual-size note. Let me update it slightly.
+
+Let me update the AGENTS.md invariant to document the virtual-size behavior:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/AGENTS.md",
+  "newString": "- **Initial mode must not be the GPU maximum.** PreInit calls `RDCReadEDID()` (driver-native I2C/DDC read, independent of the `vbe` module) before building the mode pool, then `RDCSelectInitialMode()` reorders `pScrn->modes` after validation so the server starts at the monitor's EDID native resolution (modes larger than the EDID max are dropped) and shrinks the virtual framebuffer (`virtualX`/`virtualY`/`displayWidth`) to the largest surviving mode — otherwise the RandR screen size stays at the GPU max even though the hardware mode is correct. EDID matching is tolerant: some panels encode the DTD active pixels without the spec's `-1` (e.g. 1281x1025 for a 1280x1024 panel), so `RDCFindModeBest` first tries an exact match and then the largest mode that fits inside the parsed size. Without EDID a safe mode (largest ≤ 1024x768) is used; `Option \"DefaultMode\" \"1366x768\"` pins it explicitly. Keep `bEDIDValid`/`usEDIDNativeH/V`/`usEDIDMaxH/V` (RDCRec) in sync with `pCBIOSExtension->bEDIDValid`/`wCRTDefaultH/V`.",
+  "oldString": "- **Initial mode must not be the GPU maximum.** PreInit calls `RDCReadEDID()` (driver-native I2C/DDC read, independent of the `vbe` module) before building the mode pool, then `RDCSelectInitialMode()` reorders `pScrn->modes` after validation so the server starts at the monitor's EDID native resolution (modes larger than the EDID max are dropped). Without EDID a safe mode (largest ≤ 1024x768) is used; `Option \"DefaultMode\" \"1366x768\"` pins it explicitly. Keep `bEDIDValid`/`usEDIDNativeH/V`/`usEDIDMaxH/V` (RDCRec) in sync with `pCBIOSExtension->bEDIDValid`/`wCRTDefaultH/V`."
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 19.7s)
+
+_Thinking:_
+
+Now, let me also reconsider the "Known limitations" section — it says "the initial mode falls back to a safe default (largest ≤ 1024x768) rather than the GPU maximum". That's still accurate.
+
+Let me now do a final clean build to be sure, and summarize.
+
+Actually, wait — I want to reconsider one more potential subtlety about `RDCShrinkVirtualSize` and the DE. The DE (e.g., KDE) reads `xrandr` screen size = 1280x1024, and the preferred output mode = 1280x1024. Perfect match. 
+
+But there's one more scenario I want to handle: what if the DE STILL picks a different mode after our preferred flag? E.g., some DEs ignore the preferred flag and pick the first mode. First mode = 1280x1024 (we moved it to head). Either way it's 1280x1024.
+
+Also — what about the `M_T_PREFERRED` flag actually being honored by legacy RandR? Earlier I verified `xf86RROutputSetModes` puts PREF modes first. And `RROutputSetModes` marks the preferred mode. Let me double-check the legacy RandR output path uses xf86RROutputSetModes — the legacy RandR (for drivers without xf86Crtc) uses `xf86RandR12Init12` which for legacy (no crtc) creates a single output and calls xf86RROutputSetModes with pScrn->modes. Let me verify quickly.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -n \"xf86RROutputSetModes\" hw/xfree86/modes/xf86RandR12.c | head",
+  "description": "Check legacy RandR output modes path"
+}
+```
+
+**Output:**
+```
+1582:xf86RROutputSetModes(RROutputPtr randr_output, DisplayModePtr modes)
+1668:        xf86RROutputSetModes(output->randr_output, output->probed_modes);
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.5s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '1635,1695p' hw/xfree86/modes/xf86RandR12.c",
+  "description": "Read legacy RandR probe modes"
+}
+```
+
+**Output:**
+```
+
+/*
+ * Mirror the current mode configuration to RandR
+ */
+static Bool
+xf86RandR12SetInfo12(ScreenPtr pScreen)
+{
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
+    RROutputPtr *clones;
+    RRCrtcPtr *crtcs;
+    int ncrtc;
+    int o, c, l;
+    int nclone;
+
+    clones = xallocarray(config->num_output, sizeof(RROutputPtr));
+    crtcs = xallocarray(config->num_crtc, sizeof(RRCrtcPtr));
+    for (o = 0; o < config->num_output; o++) {
+        xf86OutputPtr output = config->output[o];
+
+        ncrtc = 0;
+        for (c = 0; c < config->num_crtc; c++)
+            if (output->possible_crtcs & (1 << c))
+                crtcs[ncrtc++] = config->crtc[c]->randr_crtc;
+
+        if (!RROutputSetCrtcs(output->randr_output, crtcs, ncrtc)) {
+            free(crtcs);
+            free(clones);
+            return FALSE;
+        }
+
+        RROutputSetPhysicalSize(output->randr_output,
+                                output->mm_width, output->mm_height);
+        xf86RROutputSetModes(output->randr_output, output->probed_modes);
+
+        switch (output->status) {
+        case XF86OutputStatusConnected:
+            RROutputSetConnection(output->randr_output, RR_Connected);
+            break;
+        case XF86OutputStatusDisconnected:
+	    if (xf86OutputForceEnabled(output))
+                RROutputSetConnection(output->randr_output, RR_Connected);
+	    else
+                RROutputSetConnection(output->randr_output, RR_Disconnected);
+            break;
+        case XF86OutputStatusUnknown:
+            RROutputSetConnection(output->randr_output, RR_UnknownConnection);
+            break;
+        }
+
+        RROutputSetSubpixelOrder(output->randr_output, output->subpixel_order);
+
+        /*
+         * Valid clones
+         */
+        nclone = 0;
+        for (l = 0; l < config->num_output; l++) {
+            xf86OutputPtr clone = config->output[l];
+
+            if (l != o && (output->possible_clones & (1 << l)))
+                clones[nclone++] = clone->randr_output;
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.1s)
+
+_Thinking:_
+
+This is the xf86Crtc path (`config->output[o]`), which this legacy driver doesn't use (no xf86CrtcConfig). The legacy path for drivers without xf86Crtc is different. Let me check `xf86RandR12Init12`'s legacy branch — it creates a fake output with `probed_modes = pScrn->modes` and calls the same xf86RROutputSetModes. Let me find it.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -n \"probed_modes\" hw/xfree86/modes/xf86RandR12.c | head",
+  "description": "Find probed_modes assignment"
+}
+```
+
+**Output:**
+```
+1668:        xf86RROutputSetModes(output->randr_output, output->probed_modes);
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.9s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -n \"xf86RandR12Init12\\|xf86RandR12GetInfo12\\|crrtc\\|legacy\" hw/xfree86/modes/xf86RandR12.c | head -20",
+  "description": "Find legacy RandR init path"
+}
+```
+
+**Output:**
+```
+74:static Bool xf86RandR12Init12(ScreenPtr pScreen);
+893:    if (!xf86RandR12Init12(pScreen))
+1713:xf86RandR12GetInfo12(ScreenPtr pScreen, Rotation * rotations)
+2350:xf86RandR12Init12(ScreenPtr pScreen)
+2356:    rp->rrGetInfo = xf86RandR12GetInfo12;
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.5s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '2350,2470p' hw/xfree86/modes/xf86RandR12.c",
+  "description": "Read xf86RandR12Init12 legacy branch"
+}
+```
+
+**Output:**
+```
+xf86RandR12Init12(ScreenPtr pScreen)
+{
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    rrScrPrivPtr rp = rrGetScrPriv(pScreen);
+    XF86RandRInfoPtr randrp = XF86RANDRINFO(pScreen);
+
+    rp->rrGetInfo = xf86RandR12GetInfo12;
+    rp->rrScreenSetSize = xf86RandR12ScreenSetSize;
+    rp->rrCrtcSet = xf86RandR12CrtcSet;
+    rp->rrCrtcSetGamma = xf86RandR12CrtcSetGamma;
+    rp->rrOutputSetProperty = xf86RandR12OutputSetProperty;
+    rp->rrOutputValidateMode = xf86RandR12OutputValidateMode;
+#if RANDR_13_INTERFACE
+    rp->rrOutputGetProperty = xf86RandR13OutputGetProperty;
+    rp->rrGetPanning = xf86RandR13GetPanning;
+    rp->rrSetPanning = xf86RandR13SetPanning;
+#endif
+    rp->rrModeDestroy = xf86RandR12ModeDestroy;
+    rp->rrSetConfig = NULL;
+
+    rp->rrProviderSetOutputSource = xf86RandR14ProviderSetOutputSource;
+    rp->rrProviderSetOffloadSink = xf86RandR14ProviderSetOffloadSink;
+
+    rp->rrProviderSetProperty = xf86RandR14ProviderSetProperty;
+    rp->rrProviderGetProperty = xf86RandR14ProviderGetProperty;
+    rp->rrCrtcSetScanoutPixmap = xf86CrtcSetScanoutPixmap;
+    rp->rrProviderDestroy = xf86RandR14ProviderDestroy;
+
+    rp->rrCreateLease = xf86RandR16CreateLease;
+    rp->rrTerminateLease = xf86RandR16TerminateLease;
+
+    pScrn->PointerMoved = xf86RandR12PointerMoved;
+    pScrn->ChangeGamma = xf86RandR12ChangeGamma;
+
+    randrp->orig_EnterVT = pScrn->EnterVT;
+    pScrn->EnterVT = xf86RandR12EnterVT;
+
+    randrp->panning = FALSE;
+    randrp->orig_ConstrainCursorHarder = pScreen->ConstrainCursorHarder;
+    pScreen->ConstrainCursorHarder = xf86RandR13ConstrainCursorHarder;
+
+    if (!xf86RandR12CreateObjects12(pScreen))
+        return FALSE;
+
+    /*
+     * Configure output modes
+     */
+    if (!xf86RandR12SetInfo12(pScreen))
+        return FALSE;
+
+    if (!xf86RandR12InitGamma(pScrn, 256))
+        return FALSE;
+
+    return TRUE;
+}
+
+#endif
+
+Bool
+xf86RandR12PreInit(ScrnInfoPtr pScrn)
+{
+    return TRUE;
+}
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.6s)
+
+_Thinking:_
+
+This is the generic RandR12 setup. The `xf86RandR12CreateObjects12` creates the legacy output (for non-CRTC drivers). Let me look at `xf86RandR12CreateObjects12` for the legacy branch to confirm probed_modes = pScrn->modes.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -n \"xf86RandR12CreateObjects12\" hw/xfree86/modes/xf86RandR12.c | head -2",
+  "description": "Find CreateObjects12"
+}
+```
+
+**Output:**
+```
+1725:xf86RandR12CreateObjects12(ScreenPtr pScreen)
+2391:    if (!xf86RandR12CreateObjects12(pScreen))
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.4s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '1725,1810p' hw/xfree86/modes/xf86RandR12.c",
+  "description": "Read CreateObjects12"
+}
+```
+
+**Output:**
+```
+xf86RandR12CreateObjects12(ScreenPtr pScreen)
+{
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
+    int c;
+    int o;
+
+    if (!RRInit())
+        return FALSE;
+
+    /*
+     * Configure crtcs
+     */
+    for (c = 0; c < config->num_crtc; c++) {
+        xf86CrtcPtr crtc = config->crtc[c];
+
+        crtc->randr_crtc = RRCrtcCreate(pScreen, crtc);
+    }
+    /*
+     * Configure outputs
+     */
+    for (o = 0; o < config->num_output; o++) {
+        xf86OutputPtr output = config->output[o];
+
+        output->randr_output = RROutputCreate(pScreen, output->name,
+                                              strlen(output->name), output);
+
+        if (output->funcs->create_resources != NULL)
+            output->funcs->create_resources(output);
+        RRPostPendingProperties(output->randr_output);
+    }
+
+    if (config->name) {
+        config->randr_provider = RRProviderCreate(pScreen, config->name,
+                                                  strlen(config->name));
+
+        RRProviderSetCapabilities(config->randr_provider, pScrn->capabilities);
+    }
+
+    return TRUE;
+}
+
+static void
+xf86RandR12CreateMonitors(ScreenPtr pScreen)
+{
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+    xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
+    int o, ot;
+    int ht, vt;
+    int ret;
+    char buf[25];
+
+    for (o = 0; o < config->num_output; o++) {
+        xf86OutputPtr output = config->output[o];
+        struct xf86CrtcTileInfo *tile_info = &output->tile_info, *this_tile;
+        RRMonitorPtr monitor;
+        int output_num, num_outputs;
+        if (!tile_info->group_id)
+            continue;
+
+        if (tile_info->tile_h_loc ||
+            tile_info->tile_v_loc)
+            continue;
+
+        num_outputs = tile_info->num_h_tile * tile_info->num_v_tile;
+
+        monitor = RRMonitorAlloc(num_outputs);
+        if (!monitor)
+            return;
+        monitor->pScreen = pScreen;
+        snprintf(buf, 25, "Auto-Monitor-%d", tile_info->group_id);
+        monitor->name = MakeAtom(buf, strlen(buf), TRUE);
+        monitor->primary = 0;
+        monitor->automatic = TRUE;
+        memset(&monitor->geometry.box, 0, sizeof(monitor->geometry.box));
+
+        output_num = 0;
+        for (ht = 0; ht < tile_info->num_h_tile; ht++) {
+            for (vt = 0; vt < tile_info->num_v_tile; vt++) {
+
+                for (ot = 0; ot < config->num_output; ot++) {
+                    this_tile = &config->output[ot]->tile_info;
+
+                    if (this_tile->group_id != tile_info->group_id)
+                        continue;
+
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 11.5s)
+
+_Thinking:_
+
+This RandR12 path uses `xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn)`. For this legacy driver, is `XF86_CRTC_CONFIG_PTR(pScrn)` set up? This driver doesn't call `xf86CrtcConfigInit` / doesn't create crtcs/outputs... BUT it DOES include xf86Crtc.h and there's `RDCRandRGetInfo`/`RDCRandRSetConfig` as `DriverFunc` handlers. 
+
+Wait — `xf86RandR12PreInit` is called in PreInit by `xf86RandR12PreInit`? No — that's only if the driver calls it. Let me check: does this driver use the xf86Crtc-based RandR or the old one? The driver sets `pScrn->DriverFunc = RDCDriverFunc` (only when `bRandRRotation`). And `pScrn->RandRSetConfig`? Let me search.
+
+Actually, in modern Xorg, `xf86RandR12` is initialized by `xf86RandR12Init` which is called by the server in `xf86InitRandR`? For legacy drivers, `xf86RandR12PreInit` is called by... hmm. Let me check whether this driver's `RDCRandRGetInfo`/`RDCRandRSetConfig` (the RR_GET_INFO/RR_SET_CONFIG DriverFunc ops) are the legacy RandR 1.0/1.1 interface.
+
+Actually the old interface: `pScrn->RandRGetInfo`/`pScrn->RandRSetConfig` fields. Modern Xorg removed those. The `DriverFunc` with `RR_GET_INFO`/`RR_SET_CONFIG` — that's the legacy `XFree86-RandR` extension handler (`RRGetInfo`/`RRSetConfig` via xorgRRGetInfo/xorgRRSetConfig). Let me check where xorgRRGetInfo calls DriverFunc.
+
+Regardless — the important question is whether RandR's reported screen size and mode list come from `pScrn->modes` + `pScrn->virtualX/Y`. For the legacy RandR (the old XFree86-RandR extension + `xf86RandR12`'s legacy fallback), yes. `xf86RandR12Init12` → `xf86RandR12SetInfo12` → `output->probed_modes`... but wait, where is probed_modes set for a driver WITHOUT xf86Crtc? `xf86RandR12SetInfo12` iterates `config->output[o]` — this requires `XF86_CRTC_CONFIG_PTR` to be non-NULL. For a driver that never created crtc/outputs, config would be NULL → crash?!
+
+Hmm — but this driver WORKS (the log shows RandR extension initializing and the DE functioning). So either:
+1. `xf86RandR12` uses a different legacy path, or
+2. `xf86CrtcConfig` gets created somewhere.
+
+Actually — `xf86RandR12PreInit` (in the file I read, returns TRUE) is called by... let me check `xf86InitRandR` / `xf86RandR12Init`. Actually, the server calls `xf86RandR12Init(pScreen)` at screen init? Let me look at where it's called.
+
+Actually — the old `XFree86-RandR` extension (RRGetInfo/RRSetConfig DriverFunc) is the path this driver uses for rotation (when bRandRRotation). For the main RandR (screen size + modes), the server's `xf86RandR12` handles it. Let me look at `xf86RandR12Init` and whether it requires crtc config.
+
+Hmm, I'm going down a rabbit hole. The key point from the log: the DE works and `xrandr` presumably works. The log line 132 "Virtual size is 1920x1200" and RandR extension init at line 189. The user's complaint is the screen shows max. My fix changes `pScrn->virtualX/virtualY` and the mode list + preferred flag. Whatever RandR path is used, it reads these from pScrn. So the fix is correct.
+
+Actually — let me just double-check there isn't a totally separate RandR mode list that bypasses pScrn->modes. `xf86RandR12GetInfo12`... Let me check what it does for the legacy case.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '1713,1725p' hw/xfree86/modes/xf86RandR12.c && grep -rn \"xf86RandR12PreInit\\|xf86RandR12Init\" hw/xfree86/common/xf86Init.c hw/xfree86/modes/xf86RandR12.c | head",
+  "description": "Check RandR init calls"
+}
+```
+
+**Output:**
+```
+xf86RandR12GetInfo12(ScreenPtr pScreen, Rotation * rotations)
+{
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+
+    if (!pScrn->vtSema)
+        return TRUE;
+    xf86ProbeOutputModes(pScrn, 0, 0);
+    xf86SetScrnInfoModes(pScrn);
+    return xf86RandR12SetInfo12(pScreen);
+}
+
+static Bool
+xf86RandR12CreateObjects12(ScreenPtr pScreen)
+hw/xfree86/modes/xf86RandR12.c:74:static Bool xf86RandR12Init12(ScreenPtr pScreen);
+hw/xfree86/modes/xf86RandR12.c:843:xf86RandR12Init(ScreenPtr pScreen)
+hw/xfree86/modes/xf86RandR12.c:893:    if (!xf86RandR12Init12(pScreen))
+hw/xfree86/modes/xf86RandR12.c:1486:xf86RandR12InitGamma(ScrnInfoPtr pScrn, unsigned gammaSize) {
+hw/xfree86/modes/xf86RandR12.c:2350:xf86RandR12Init12(ScreenPtr pScreen)
+hw/xfree86/modes/xf86RandR12.c:2400:    if (!xf86RandR12InitGamma(pScrn, 256))
+hw/xfree86/modes/xf86RandR12.c:2409:xf86RandR12PreInit(ScrnInfoPtr pScrn)
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 4.5s)
+
+_Thinking:_
+
+`xf86RandR12GetInfo12` → `xf86ProbeOutputModes(pScrn, 0, 0)` + `xf86SetScrnInfoModes(pScrn)` + `xf86RandR12SetInfo12`. These are the xf86Crtc-based paths. `xf86ProbeOutputModes` iterates `config->output[]`... This requires the driver to have called `xf86CrtcConfigInit`. This driver doesn't (no xf86Crtc usage — it's a legacy DDX driver).
+
+So how does RandR work for this driver? The `xf86RandR12Init` is called from... let me check line 843 context and who calls xf86RandR12Init. And `xf86EnsureRANDR` (from xf86Init.c line ~655 earlier: "If the driver hasn't set up its own RANDR support, install the fallback support. xf86EnsureRANDR(...)").
+
+Let me look at xf86RandR12Init at 843 and xf86EnsureRANDR.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '843,900p' hw/xfree86/modes/xf86RandR12.c; echo ====; grep -rn \"xf86EnsureRANDR\" hw/xfree86/common/*.c hw/xfree86/modes/*.c | head",
+  "description": "Read xf86RandR12Init and find EnsureRANDR"
+}
+```
+
+**Output:**
+```
+xf86RandR12Init(ScreenPtr pScreen)
+{
+    rrScrPrivPtr rp;
+    XF86RandRInfoPtr randrp;
+
+#ifdef PANORAMIX
+    /* XXX disable RandR when using Xinerama */
+    if (!noPanoramiXExtension) {
+        if (xf86NumScreens == 1)
+            noPanoramiXExtension = TRUE;
+        else
+            return TRUE;
+    }
+#endif
+
+    if (xf86RandR12Generation != serverGeneration)
+        xf86RandR12Generation = serverGeneration;
+
+    if (!dixRegisterPrivateKey(&xf86RandR12KeyRec, PRIVATE_SCREEN, 0))
+        return FALSE;
+
+    randrp = malloc(sizeof(XF86RandRInfoRec));
+    if (!randrp)
+        return FALSE;
+
+    if (!RRScreenInit(pScreen)) {
+        free(randrp);
+        return FALSE;
+    }
+    rp = rrGetScrPriv(pScreen);
+    rp->rrGetInfo = xf86RandR12GetInfo;
+    rp->rrSetConfig = xf86RandR12SetConfig;
+
+    randrp->virtualX = -1;
+    randrp->virtualY = -1;
+    randrp->mmWidth = pScreen->mmWidth;
+    randrp->mmHeight = pScreen->mmHeight;
+
+    randrp->rotation = RR_Rotate_0;     /* initial rotated mode */
+
+    randrp->supported_rotations = RR_Rotate_0;
+
+    randrp->maxX = randrp->maxY = 0;
+
+    randrp->palette_size = 0;
+    randrp->palette = NULL;
+
+    dixSetPrivate(&pScreen->devPrivates, &xf86RandR12KeyRec, randrp);
+
+#if RANDR_12_INTERFACE
+    if (!xf86RandR12Init12(pScreen))
+        return FALSE;
+#endif
+    return TRUE;
+}
+
+void
+xf86RandR12CloseScreen(ScreenPtr pScreen)
+====
+hw/xfree86/common/xf86Init.c:271:xf86EnsureRANDR(ScreenPtr pScreen)
+hw/xfree86/common/xf86Init.c:669:        xf86EnsureRANDR(xf86Screens[i]->pScreen);
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.8s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '271,300p' hw/xfree86/common/xf86Init.c",
+  "description": "Read xf86EnsureRANDR"
+}
+```
+
+**Output:**
+```
+xf86EnsureRANDR(ScreenPtr pScreen)
+{
+#ifdef RANDR
+        if (!dixPrivateKeyRegistered(rrPrivKey) ||
+            !rrGetScrPriv(pScreen))
+            xf86RandRInit(pScreen);
+#endif
+}
+
+/*
+ * InitOutput --
+ *	Initialize screenInfo for all actually accessible framebuffers.
+ *      That includes vt-manager setup, querying all possible devices and
+ *      collecting the pixmap formats.
+ */
+void
+InitOutput(ScreenInfo * pScreenInfo, int argc, char **argv)
+{
+    int i, j, k, scr_index;
+    const char **modulelist;
+    void **optionlist;
+    Bool autoconfig = FALSE;
+    Bool sigio_blocked = FALSE;
+    Bool want_hw_access = FALSE;
+    GDevPtr configured_device;
+
+    xf86Initialising = TRUE;
+
+    config_pre_init();
+
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 5.4s)
+
+_Thinking:_
+
+`xf86EnsureRANDR` → `xf86RandRInit` (the old XFree86 RandR init) if RandR12 isn't set up. Hmm, `xf86RandRInit` — is that the legacy RandR 1.0/1.1? Let me check. Actually, `xf86RandR12Init` gets called from `xf86RandR12PreInit`? No. Hmm, who calls `xf86RandR12Init`? Let me search.
+
+Actually, this is getting too deep. The critical question is simply: does the RandR mode list / screen size that the DE sees come from `pScrn->modes` and `pScrn->virtualX/virtualY`? For ALL RandR flavors (legacy XFree86-RandR and RandR12), the mode list comes from pScrn->modes (via xf86RandR12SetInfo12's probed_modes = pScrn->modes, or the legacy RRGetInfo which returns pScrn->modes). And screen size from pScrn->virtualX/Y. My changes to these fields are effective regardless of the specific path.
+
+Actually — let me just verify that the log's DE would see the fixed values. The DE sees the RandR screen size. `xf86RandR12ScreenSetSize`/`RRGetScreenSize`... The legacy `RRGetScreenInfo` returns `pScrn->virtualX/Y` (via xorgRRGetInfo?). Let me check `xf86RandR12GetInfo` (the one called by rrGetInfo).
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n \"$(grep -n '^xf86RandR12GetInfo(' hw/xfree86/modes/xf86RandR12.c | head -1 | cut -d: -f1),+45p\" hw/xfree86/modes/xf86RandR12.c",
+  "description": "Read xf86RandR12GetInfo"
+}
+```
+
+**Output:**
+```
+xf86RandR12GetInfo(ScreenPtr pScreen, Rotation * rotations)
+{
+    RRScreenSizePtr pSize;
+    ScrnInfoPtr scrp = xf86ScreenToScrn(pScreen);
+    XF86RandRInfoPtr randrp = XF86RANDRINFO(pScreen);
+    DisplayModePtr mode;
+    int maxX = 0, maxY = 0;
+
+    *rotations = randrp->supported_rotations;
+
+    if (randrp->virtualX == -1 || randrp->virtualY == -1) {
+        randrp->virtualX = scrp->virtualX;
+        randrp->virtualY = scrp->virtualY;
+    }
+
+    /* Re-probe the outputs for new monitors or modes */
+    if (scrp->vtSema) {
+        xf86ProbeOutputModes(scrp, 0, 0);
+        xf86SetScrnInfoModes(scrp);
+    }
+
+    for (mode = scrp->modes;; mode = mode->next) {
+        int refresh = xf86RandR12ModeRefresh(mode);
+
+        if (randrp->maxX == 0 || randrp->maxY == 0) {
+            if (maxX < mode->HDisplay)
+                maxX = mode->HDisplay;
+            if (maxY < mode->VDisplay)
+                maxY = mode->VDisplay;
+        }
+        pSize = RRRegisterSize(pScreen,
+                               mode->HDisplay, mode->VDisplay,
+                               randrp->mmWidth, randrp->mmHeight);
+        if (!pSize)
+            return FALSE;
+        RRRegisterRate(pScreen, pSize, refresh);
+
+        if (xf86ModesEqual(mode, scrp->currentMode)) {
+            RRSetCurrentConfig(pScreen, randrp->rotation, refresh, pSize);
+        }
+        if (mode->next == scrp->modes)
+            break;
+    }
+
+    if (randrp->maxX == 0 || randrp->maxY == 0) {
+        randrp->maxX = maxX;
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 7.4s)
+
+_Thinking:_
+
+This is the legacy RandR12 path (`xf86RandR12GetInfo`), and it iterates `scrp->modes` and uses `scrp->currentMode` to set the current config. `RRSetCurrentConfig` sets the current screen size from the current mode. So after my fixes:
+- `scrp->currentMode` = 1280x1024 → `RRSetCurrentConfig` sets current size to 1280x1024.
+- `randrp->virtualX/virtualY` = `scrp->virtualX/virtualY` = 1280x1024 (my shrink).
+
+So RandR reports current = 1280x1024. And modes = all remaining ≤1280x1024, with 1280x1024 marked preferred (for the newer xf86RandR12SetInfo12 path).
+
+This confirms the fix. Also note this path uses `RRRegisterSize` per mode — the "sizes" are the modes, and current = currentMode.
+
+Wait — there's a subtle detail in this legacy path: `RRSetCurrentConfig(pScreen, rotation, refresh, pSize)` is called for the mode that equals currentMode. So the current RandR config = 1280x1024@60. 
+
+Now, I'm confident the fix addresses the log. Let me also reconsider whether `xf86ProbeOutputModes(scrp, 0, 0)` (called in xf86RandR12GetInfo when vtSema) could clobber my `pScrn->modes`/virtualX/Y at DE query time. `xf86ProbeOutputModes` is for xf86Crtc drivers (iterates config outputs). For a legacy driver without xf86Crtc config... it might do nothing or crash? But the DE works currently, so this path is either not hit or is benign. Actually — hmm, `xf86ProbeOutputModes` requires `XF86_CRTC_CONFIG_PTR(pScrn)`. If the driver never set up crtc config, that's NULL → crash. But the driver works, so either:
+1. The legacy `xf86RandR12GetInfo` path ISN'T used (the driver's RandR goes through a different path), or
+2. It is used and works because... hmm.
+
+Wait — actually, this driver sets `pScrn->DriverFunc = RDCDriverFunc` only when `bRandRRotation`. When bRandRRotation is false (default), does the driver have a RandR path at all? The server's `xf86EnsureRANDR` → `xf86RandRInit` (old XFree86-RandR) if not RandR12. And `xf86RandR12Init` is called from... let me check who calls xf86RandR12Init. It's not xf86EnsureRANDR (that calls xf86RandRInit, the OLD one). 
+
+Let me search for who calls xf86RandR12Init.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -rn \"xf86RandR12Init\\b\" hw/xfree86/ | grep -v \"Init12\\|InitGamma\\|randr12Init\" | head",
+  "description": "Find xf86RandR12Init callers"
+}
+```
+
+**Output:**
+```
+hw/xfree86/modes/xf86RandR12.c:843:xf86RandR12Init(ScreenPtr pScreen)
+hw/xfree86/modes/xf86Crtc.c:822:    xf86RandR12Init(screen);
+hw/xfree86/modes/xf86RandR12.h:29:extern _X_EXPORT Bool xf86RandR12Init(ScreenPtr pScreen);
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.8s)
+
+_Thinking:_
+
+`xf86RandR12Init` is called from `xf86Crtc.c:822` — i.e., only for xf86Crtc-based drivers (from `xf86CrtcScreenInit`). This driver does NOT use xf86Crtc. So RandR12 is NOT initialized for this driver. Instead, `xf86EnsureRANDR` → `xf86RandRInit` → the old XFree86-RandR extension.
+
+The old `xf86RandRInit` uses `pScrn->RandRGetInfo`/`RandRSetConfig`... but modern Xorg removed those fields. Hmm. Let me check `xf86RandRInit` (in xf86RandR.c? or xf86RandR12.c). Let me find it.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -rn \"xf86RandRInit\\b\" hw/xfree86/ | grep -v \"RandR12\\|RandRInit12\" | head; grep -rln \"xf86RandRInit(\" hw/xfree86/*.c hw/xfree86/**/*.c 2>/dev/null | head",
+  "description": "Find old xf86RandRInit"
+}
+```
+
+**Output:**
+```
+hw/xfree86/common/xf86RandR.c:403:xf86RandRInit(ScreenPtr pScreen)
+hw/xfree86/common/xf86Init.c:276:            xf86RandRInit(pScreen);
+hw/xfree86/common/xf86.h:368:xf86RandRInit(ScreenPtr pScreen);
+hw/xfree86/common/xf86Init.c
+hw/xfree86/common/xf86RandR.c
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.4s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n '403,480p' hw/xfree86/common/xf86RandR.c",
+  "description": "Read old xf86RandRInit"
+}
+```
+
+**Output:**
+```
+xf86RandRInit(ScreenPtr pScreen)
+{
+    rrScrPrivPtr rp;
+    XF86RandRInfoPtr randrp;
+    ScrnInfoPtr scrp = xf86ScreenToScrn(pScreen);
+
+#ifdef PANORAMIX
+    /* XXX disable RandR when using Xinerama */
+    if (!noPanoramiXExtension)
+        return TRUE;
+#endif
+
+    xf86RandRKey = &xf86RandRKeyRec;
+
+    if (!dixRegisterPrivateKey(&xf86RandRKeyRec, PRIVATE_SCREEN, 0))
+        return FALSE;
+
+    randrp = malloc(sizeof(XF86RandRInfoRec));
+    if (!randrp)
+        return FALSE;
+
+    if (!RRScreenInit(pScreen)) {
+        free(randrp);
+        return FALSE;
+    }
+    rp = rrGetScrPriv(pScreen);
+    rp->rrGetInfo = xf86RandRGetInfo;
+    rp->rrSetConfig = xf86RandRSetConfig;
+
+    randrp->virtualX = scrp->virtualX;
+    randrp->virtualY = scrp->virtualY;
+    randrp->mmWidth = pScreen->mmWidth;
+    randrp->mmHeight = pScreen->mmHeight;
+
+    randrp->CloseScreen = pScreen->CloseScreen;
+    pScreen->CloseScreen = xf86RandRCloseScreen;
+
+    randrp->rotation = RR_Rotate_0;
+
+    dixSetPrivate(&pScreen->devPrivates, xf86RandRKey, randrp);
+    return TRUE;
+}
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.5s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && sed -n \"$(grep -n '^xf86RandRGetInfo(' hw/xfree86/common/xf86RandR.c | cut -d: -f1),+60p\" hw/xfree86/common/xf86RandR.c",
+  "description": "Read old xf86RandRGetInfo"
+}
+```
+
+**Output:**
+```
+xf86RandRGetInfo(ScreenPtr pScreen, Rotation * rotations)
+{
+    RRScreenSizePtr pSize;
+    ScrnInfoPtr scrp = xf86ScreenToScrn(pScreen);
+    XF86RandRInfoPtr randrp = XF86RANDRINFO(pScreen);
+    DisplayModePtr mode;
+    int refresh0 = 60;
+    xorgRRModeMM RRModeMM;
+
+    *rotations = RR_Rotate_0;
+
+    for (mode = scrp->modes; mode != NULL; mode = mode->next) {
+        int refresh = xf86RandRModeRefresh(mode);
+
+        if (mode == scrp->modes)
+            refresh0 = refresh;
+
+        RRModeMM.mode = mode;
+        RRModeMM.virtX = randrp->virtualX;
+        RRModeMM.virtY = randrp->virtualY;
+        RRModeMM.mmWidth = randrp->mmWidth;
+        RRModeMM.mmHeight = randrp->mmHeight;
+
+        if (scrp->DriverFunc) {
+            (*scrp->DriverFunc) (scrp, RR_GET_MODE_MM, &RRModeMM);
+        }
+
+        pSize = RRRegisterSize(pScreen,
+                               mode->HDisplay, mode->VDisplay,
+                               RRModeMM.mmWidth, RRModeMM.mmHeight);
+        if (!pSize)
+            return FALSE;
+        RRRegisterRate(pScreen, pSize, refresh);
+        if (mode == scrp->currentMode &&
+            mode->HDisplay == scrp->virtualX &&
+            mode->VDisplay == scrp->virtualY)
+            RRSetCurrentConfig(pScreen, randrp->rotation, refresh, pSize);
+        if (mode->next == scrp->modes)
+            break;
+    }
+    if (scrp->currentMode->HDisplay != randrp->virtualX ||
+        scrp->currentMode->VDisplay != randrp->virtualY) {
+        mode = scrp->modes;
+
+        RRModeMM.mode = NULL;
+        RRModeMM.virtX = randrp->virtualX;
+        RRModeMM.virtY = randrp->virtualY;
+        RRModeMM.mmWidth = randrp->mmWidth;
+        RRModeMM.mmHeight = randrp->mmHeight;
+
+        if (scrp->DriverFunc) {
+            (*scrp->DriverFunc) (scrp, RR_GET_MODE_MM, &RRModeMM);
+        }
+
+        pSize = RRRegisterSize(pScreen,
+                               randrp->virtualX, randrp->virtualY,
+                               RRModeMM.mmWidth, RRModeMM.mmHeight);
+        if (!pSize)
+            return FALSE;
+        RRRegisterRate(pScreen, pSize, refresh0);
+        if (scrp->virtualX == randrp->virtualX &&
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 12.4s)
+
+_Thinking:_
+
+This is the OLD `xf86RandRGetInfo` path (used for this driver since it doesn't use xf86Crtc). Key logic:
+
+```c
+if (mode == scrp->currentMode &&
+    mode->HDisplay == scrp->virtualX &&
+    mode->VDisplay == scrp->virtualY)
+    RRSetCurrentConfig(pScreen, randrp->rotation, refresh, pSize);
+```
+
+The current config is only set when the current mode matches the virtual size! In the OLD code, virtualX/Y came from `scrp->virtualX/virtualY` (1920x1200) but currentMode was 1280x1024 → mismatch → current config NOT set here. Then:
+
+```c
+if (scrp->currentMode->HDisplay != randrp->virtualX ||
+    scrp->currentMode->VDisplay != randrp->virtualY) {
+    ... RRRegisterSize(randrp->virtualX, randrp->virtualY) ...  // registers 1920x1200 size
+    if (scrp->virtualX == randrp->virtualX && ...) RRSetCurrentConfig(1920x1200)
+```
+
+So the current RandR config was set to the VIRTUAL size 1920x1200 (via the second branch)! That's exactly why the DE saw "1920x1200" — because `virtualX/virtualY` = 1920x1200 ≠ currentMode 1280x1024, the old RandR path registers and sets the current config to the virtual size!
+
+With my Fix B (shrink virtualX/Y to 1280x1024 = currentMode's HDisplay/VDisplay), the first branch matches:
+```c
+mode == scrp->currentMode && mode->HDisplay == scrp->virtualX && mode->VDisplay == scrp->virtualY
+```
+→ current config = 1280x1024@60. 
+
+So Fix B is EXACTLY what's needed for the old RandR path. This confirms the fix is correct and directly addresses the "DE sees max" problem.
+
+Now I'm confident. Let me do a final build + run all tests once more, then summarize.
+
+Also — I realize I should double check `randrp->virtualX = scrp->virtualX` happens in `xf86RandRInit` (line: `randrp->virtualX = scrp->virtualX;`), which runs at screen init (after PreInit). So the shrunk value is picked up. Good.
+
+Let me run the final verification: build + tests.
+
+The old RandR path (`xf86RandRGetInfo`) only sets the current config when `currentMode` matches `virtualX/Y` — otherwise it registers the **virtual size as current**. That's exactly why the DE saw 1920x1200. Fix B makes them match (both 1280x1024). Let me run the final verification:
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && make clean >/dev/null 2>&1 && bash autogen.sh >/dev/null 2>&1 && make 2>&1 | grep -iE \"error|warning\" | grep -vE \"xf86PciInfo.h is deprecated|rdc_vgatool.c|rdc_extension.c|CInt10.c\"; echo \"grep_exit=$?\"; ls -la src/.libs/rdcm15_drv.so",
+  "description": "Clean rebuild from scratch",
+  "timeout": 300000
+}
+```
+
+**Output:**
+```
+grep_exit=1
+-rwxr-xr-x 1 liaronce liaronce 1174344  8月19日 21:25 src/.libs/rdcm15_drv.so
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.6s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo && gcc -Wall -Wextra -o test_modes test_modes.c && ./test_modes | tail -6 && gcc -Wall -Wextra -o test_edid test_edid.c && ./test_edid | tail -3",
+  "description": "Re-run both test suites"
+}
+```
+
+**Output:**
+```
+  list ok, 1 nodes
+off-by-one native best-fit: 1280x1024[PREF] 1920x1200[   ] 1920x1080[   ] 1680x1050[   ] 1440x900[   ] 1366x768[   ] 1280x720[   ] 1024x768[   ] 800x600[   ] 640x480[   ]
+after prune(max 1281x1025): 1280x1024[PREF] 1280x720[   ] 1024x768[   ] 800x600[   ] 640x480[   ]
+  list ok, 5 nodes
+  shrink -> virtual 1280x1024 pitch 1280
+TESTS PASSED
+native=1920x1080 max=1920x1080
+native=800x600 max=800x600
+TESTS PASSED
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.9s)
+
+_Thinking:_
+
+All tests pass, clean build. Let me also verify the git status to confirm what's modified now (the user committed the previous fix; only my new changes to rdc_mode.c + AGENTS.md should be uncommitted).
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && git status --short && git diff --stat",
+  "description": "Final git status"
+}
+```
+
+**Output:**
+```
+ M AGENTS.md
+ M src/rdc_mode.c
+ AGENTS.md      |  2 +-
+ src/rdc_mode.c | 62 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 61 insertions(+), 3 deletions(-)
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 6.7s)
+
+## 分析结论
+
+从 `log/Xorg.0.log` 看,上一轮修复已生效(`RDCReadEDID` 读到 EDID、硬件模式已正确设为 1280x1024,见 `CBIOS: Setting 1280 x 1024 resolution`),但两个残留问题导致用户仍看到"最大分辨率":
+
+1. **EDID 原生分辨率差 1**:日志 `RDCReadEDID: native resolution 1281x1025`。该显示器 EDID 的 DTD 活跃像素直接存 `1280/1024` 而非规范的 `活跃值-1`(1279/1023),解析出 1281x1025,与模式池里的 `1280x1024` 精确匹配失败 → 没打 `M_T_PREFERRED` 标记、没被置为首选,初始模式只是靠 prune 恰好落在 1280x1024。
+
+2. **虚拟帧缓冲仍是 GPU 最大**:日志 `Virtual size is 1920x1200`。`xf86ValidateModes` 在 EDID prune 之前已按最大模式(1920x1200)定好 `virtualX/virtualY`,而旧版 RandR 路径(`xf86RandRGetInfo`)在 `currentMode != virtualX/Y` 时会把**虚拟尺寸当作当前分辨率**上报 → DE/xrandr 看到 `current 1920 x 1200`,即用户说的"最大值"。
+
+## 修复(仅 `src/rdc_mode.c` + AGENTS.md)
+
+- **`RDCFindModeBest()`**:先精确匹配,失败则取「不大于目标分辨率的最大模式」——1281x1025 → 1280x1024,并标记 `M_T_PREFERRED`、移到列表首位,DE/RandR 会采用。
+- **`RDCShrinkVirtualSize()`**:在 `RDCSelectInitialMode()` 末尾把 `virtualX/virtualY/displayWidth` 收缩到 prune 后列表中的最大模式(本案例 1280x1024),使 `currentMode` 与虚拟尺寸一致 → RandR 正确上报 `1280x1024` 并消除超大屏幕。
+
+构建零新增警告,环形链表/最佳匹配/虚拟收缩逻辑均通过独立测试(含日志中 1281x1025 的原样场景)。重新安装后预期日志:`RDCShrinkVirtualSize: virtual size 1280x1024 (pitch 1280)`,`xrandr` 显示 `current 1280 x 1024`,`*1280x1024` 为首选模式。
 
 ---
 
