@@ -21,15 +21,22 @@
 AUTOMAKE_OPTIONS = foreign
 SUBDIRS = src
 
-EXTRA_DIST = misc/M2012-0.0.8.rom misc/00-rdc.conf
+EXTRA_DIST = misc/M2012-0.0.4.rom misc/M2012-0.0.8.rom misc/00-rdc.conf
 
 # Xorg reads user config snippets from /etc/X11/xorg.conf.d regardless of the
 # build's sysconfdir (e.g. AOSC uses /usr/etc but Xorg still reads /etc).
 XORG_CONFIG_DIR = /etc/X11/xorg.conf.d
 
+# The driver reads its VBIOS firmware from this fixed directory (see
+# BIOS_ROM_PATH_DIR in rdc.h); Option "VBIOS" selects which file to use.
+FIRMWARE_DIR = /usr/lib/firmware-rdc
+RDC_VBIOS_FILES = M2012-0.0.4.rom M2012-0.0.8.rom
+
 install-data-local:
-	$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers
-	$(INSTALL_DATA) $(srcdir)/misc/M2012-0.0.8.rom $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
+	$(MKDIR_P) $(DESTDIR)$(FIRMWARE_DIR)
+	for f in $(RDC_VBIOS_FILES); do \
+		$(INSTALL_DATA) $(srcdir)/misc/$$f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \
+	done
 	@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \
 		echo "  Installing xorg.conf.d/00-rdc.conf to $(XORG_CONFIG_DIR)"; \
 		$(MKDIR_P) $(DESTDIR)$(XORG_CONFIG_DIR); \
@@ -39,7 +46,10 @@ install-data-local:
 	fi
 
 uninstall-local:
-	rm -f $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
+	for f in $(RDC_VBIOS_FILES); do \
+		rm -f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \
+	done
+	rmdir $(DESTDIR)$(FIRMWARE_DIR) 2>/dev/null || true
 	rm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf
 
 clean-local:

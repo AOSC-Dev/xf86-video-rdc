@@ -169,7 +169,8 @@ typedef enum {
     OPTION_VRATIO,
     OPTION_RANDRROTATION,    
     OPTION_DOWN_SCALE,
-    OPTION_DEFAULT_MODE
+    OPTION_DEFAULT_MODE,
+    OPTION_VBIOS
 } RDCOpts;
 
 static const OptionInfoRec RDCOptions[] = {
@@ -185,6 +186,7 @@ static const OptionInfoRec RDCOptions[] = {
     {OPTION_RANDRROTATION, "RandRRotation", OPTV_BOOLEAN,  {0}, FALSE},
     {OPTION_DOWN_SCALE,    "DownScale",     OPTV_BOOLEAN,  {0}, FALSE},
     {OPTION_DEFAULT_MODE,  "DefaultMode",   OPTV_STRING,   {0}, FALSE},
+    {OPTION_VBIOS,         "VBIOS",         OPTV_STRING,   {0}, FALSE},
     {-1,                   NULL,            OPTV_NONE,     {0}, FALSE}
 };
 
@@ -268,7 +270,8 @@ typedef enum _CHIP_ID {
 #define  CR_VIDEO_IDLE               BIT14
 #define  CR_CR_IDLE                  BIT15
 
-#define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom"
+#define BIOS_ROM_PATH_DIR       "/usr/lib/firmware-rdc"
+#define BIOS_ROM_DEFAULT_FILE   "M2012-0.0.8.rom"
 #define BIOS_ROM_SIZE           32*1024
 #define BIOS_ROM_PHY_BASE       0xC0000
 

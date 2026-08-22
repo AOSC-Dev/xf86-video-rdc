@@ -2,7 +2,7 @@
 
 **Session ID:** ses_029316b25ffe0zETyA4WaUIR3t
 **Created:** 8/6/2026, 7:21:30 PM
-**Updated:** 8/19/2026, 9:26:03 PM
+**Updated:** 8/22/2026, 10:27:05 PM
 
 ---
 
@@ -73203,6 +73203,2484 @@ All tests pass, clean build. Let me also verify the git status to confirm what's
 - **`RDCShrinkVirtualSize()`**:在 `RDCSelectInitialMode()` 末尾把 `virtualX/virtualY/displayWidth` 收缩到 prune 后列表中的最大模式(本案例 1280x1024),使 `currentMode` 与虚拟尺寸一致 → RandR 正确上报 `1280x1024` 并消除超大屏幕。
 
 构建零新增警告,环形链表/最佳匹配/虚拟收缩逻辑均通过独立测试(含日志中 1281x1025 的原样场景)。重新安装后预期日志:`RDCShrinkVirtualSize: virtual size 1280x1024 (pitch 1280)`,`xrandr` 显示 `current 1280 x 1024`,`*1280x1024` 为首选模式。
+
+---
+
+## User
+
+@misc/00-rdc.conf 现在我需要将misc下的vbios文件安装到/usr/lib/firmware-rdc下（在安装阶段检测有没有这个目录，若无则新建），让驱动从这个目录读取vbios，且我需要在配置文件新增“Vendor”部分中使其可配置指定的vbios
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 6.8s)
+
+_Thinking:_
+
+The user wants:
+1. Install the VBIOS files from `misc/` to `/usr/lib/firmware-rdc` (creating the directory if it doesn't exist during install)
+2. The driver should read the VBIOS from this directory
+3. Add a "Vendor" section option in the config file so the VBIOS file can be configured
+
+Let me understand the current state. Let me look at the current Makefile.am and the VBIOS loading code (RDCMapVBIOS in rdc_tool.c), and the option handling.
+
+Let me first check git status and the current state of the repo.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && git status --short && git log --oneline -5",
+  "description": "Check git status and recent commits"
+}
+```
+
+**Output:**
+```
+a8d54cd fix: virtual size always max resolution
+93b93ac fix: always set to max resolution when starting DE
+eb14ee1 docs: fix typo
+f59ee6b misc: add two vbios dump files
+f5fff0d fix: bump version
+
+```
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/Makefile.am"
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/Makefile.am</path>
+<type>file</type>
+<content>
+1: #  Copyright 2005 Adam Jackson.
+2: #
+3: #  Permission is hereby granted, free of charge, to any person obtaining a
+4: #  copy of this software and associated documentation files (the "Software"),
+5: #  to deal in the Software without restriction, including without limitation
+6: #  on the rights to use, copy, modify, merge, publish, distribute, sub
+7: #  license, and/or sell copies of the Software, and to permit persons to whom
+8: #  the Software is furnished to do so, subject to the following conditions:
+9: #
+10: #  The above copyright notice and this permission notice (including the next
+11: #  paragraph) shall be included in all copies or substantial portions of the
+12: #  Software.
+13: #
+14: #  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+15: #  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+16: #  FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.  IN NO EVENT SHALL
+17: #  ADAM JACKSON BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+18: #  IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+19: #  CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+20: 
+21: AUTOMAKE_OPTIONS = foreign
+22: SUBDIRS = src
+23: 
+24: EXTRA_DIST = misc/M2012-0.0.8.rom misc/00-rdc.conf
+25: 
+26: # Xorg reads user config snippets from /etc/X11/xorg.conf.d regardless of the
+27: # build's sysconfdir (e.g. AOSC uses /usr/etc but Xorg still reads /etc).
+28: XORG_CONFIG_DIR = /etc/X11/xorg.conf.d
+29: 
+30: install-data-local:
+31: 	$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers
+32: 	$(INSTALL_DATA) $(srcdir)/misc/M2012-0.0.8.rom $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
+33: 	@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \
+34: 		echo "  Installing xorg.conf.d/00-rdc.conf to $(XORG_CONFIG_DIR)"; \
+35: 		$(MKDIR_P) $(DESTDIR)$(XORG_CONFIG_DIR); \
+36: 		$(INSTALL_DATA) $(srcdir)/misc/00-rdc.conf $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; \
+37: 	else \
+38: 		echo "  $(XORG_CONFIG_DIR)/00-rdc.conf already exists, not overwriting"; \
+39: 	fi
+40: 
+41: uninstall-local:
+42: 	rm -f $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
+43: 	rm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf
+44: 
+45: clean-local:
+46: 	rm -f Makefile Makefile.in aclocal.m4 compile config.guess config.h config.h.in config.log config.status config.sub configure depcomp install-sh libtool ltmain.sh missing stamp-h1
+47: 	rm -rf autom4te.cache
+48: 	rm -f src/rdcm15_drv.la
+49: 	rm -rf src/.deps src/.libs
+50: 	rm -f src/*.o src/*.lo
+
+(End of file - total 50 lines)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 10.9s)
+
+_Thinking:_
+
+Now let me look at the current state of things. The user's previous commits are:
+- a8d54cd fix: virtual size always max resolution
+- 93b93ac fix: always set to max resolution when starting DE
+
+Let me check the current state of rdc_tool.c (RDCMapVBIOS), rdc.h (BIOS_ROM_PATH_FILE, options), and rdc_driver.c.
+
+The task:
+1. Install the VBIOS files from `misc/` to `/usr/lib/firmware-rdc` (create dir if missing at install time).
+2. Driver reads VBIOS from `/usr/lib/firmware-rdc`.
+3. Add a "Vendor" section option so the VBIOS file can be configured.
+
+Wait — "Vendor" section? In Xorg config, there's no "Vendor" section. Hmm. The user says "我需要在配置文件新增"Vendor"部分中使其可配置指定的vbios" — "I need to add a 'Vendor' section in the config file to make it configurable for the specified vbios". Hmm, "Vendor" 部分... Maybe they mean the Device section option? Or maybe they want an xorg.conf option like `Option "VBIOS" "path"`? 
+
+Actually, re-reading: "我需要在配置文件新增"Vendor"部分中使其可配置指定的vbios" — this is a bit ambiguous. It could mean:
+- Add a config option in the (Device section of) config file to specify which VBIOS file to use.
+- The word "Vendor" might be a typo/mistranslation for "Device" section.
+
+Actually wait — maybe they mean the Monitor section? No. In the Xorg config, options for the driver go in the Device section as `Option "Name" "value"`. So likely they want something like `Option "VBIOS" "/path/to/file.rom"` in the Device section.
+
+Hmm, but they explicitly wrote "Vendor" 部分 (Vendor section). The 00-rdc.conf has a "Monitor" section with `VendorName`. Maybe they think of it as... Actually, let me re-read: "且我需要在配置文件新增"Vendor"部分中使其可配置指定的vbios" = "and I need to add a way in the config file's 'Vendor' section to configure the specified VBIOS".
+
+Hmm. Maybe they want the firmware file naming to be vendor-based? Like the firmware-rdc dir could contain multiple VBIOS files and the config selects which one.
+
+Actually — I think the most sensible interpretation: add an Xorg config option (in the Device section, which the user may be loosely calling the config/Vendor section) like `Option "VBIOS" "M2012-0.0.8.rom"` to select which VBIOS file from `/usr/lib/firmware-rdc` to use. 
+
+Wait, but the word "Vendor" is specific. Let me reconsider. Perhaps they want:
+- The firmware directory `/usr/lib/firmware-rdc` contains the .rom files.
+- In xorg.conf's Device section, an option to pick the VBIOS file.
+
+Given the ambiguity, I should implement a driver option named something clear like `Option "VBIOS" "M2012-0.0.8.rom"` that selects the ROM file (searching `/usr/lib/firmware-rdc`). I'll ask via question tool? The instructions say use the question tool only when I need an actual answer. This is a design ambiguity. But maybe I can just implement the most reasonable interpretation and note it. Actually, let me consider asking a clarifying question since the "Vendor" section wording is genuinely ambiguous.
+
+Actually, let me reconsider. In the context of xorg.conf.d config files, and the file 00-rdc.conf which has "Monitor" section with "VendorName"... The user might literally want a new config section. But Xorg doesn't support a "Vendor" section. The only place driver options go is the Device section.
+
+I think the user means: "在配置文件中(Device 部分)新增一个可配置项来指定使用哪个 vbios"。The "Vendor" mention might be because the ROM files are vendor-specific (RDC Semiconductor) and named by version. 
+
+Let me implement:
+1. `Makefile.am`: install both `M2012-0.0.4.rom` and `M2012-0.0.8.rom` to `$(moduledir)`... no wait — to `/usr/lib/firmware-rdc`. The user wants a NEW directory `/usr/lib/firmware-rdc`. So install to `$(DESTDIR)/usr/lib/firmware-rdc/`. Create it if missing (install-data-local already creates with MKDIR_P).
+
+Wait, but there's already `BIOS_ROM_PATH_FILE` = `//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom`. Currently the ROM is installed to `$(moduledir)/drivers/`. The user wants to change the install location to `/usr/lib/firmware-rdc` and the driver to read from there.
+
+2. `rdc.h`: change `BIOS_ROM_PATH_FILE` to `/usr/lib/firmware-rdc/M2012-0.0.8.rom`. Add option `OPTION_VBIOS` (string) — e.g. `Option "VBIOS" "M2012-0.0.8.rom"`.
+
+3. `rdc_tool.c`: `RDCMapVBIOS` should build the path from `/usr/lib/firmware-rdc` + configured filename. If the configured filename contains a path (absolute), use it directly? Let me look at RDCMapVBIOS first.
+
+Let me read the current rdc_tool.c RDCMapVBIOS and rdc.h.
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc_tool.c"
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/src/rdc_tool.c</path>
+<type>file</type>
+<content>
+1: /* 
+2:  * Copyright (C) 2009 RDC Semiconductor Co.,Ltd
+3:  *
+4:  * This program is free software: you can redistribute it and/or modify
+5:  * it under the terms of the GNU General Public License as published by
+6:  * the Free Software Foundation, either version 3 of the License, or
+7:  * (at your option) any later version.
+8:  *
+9:  * This program is distributed in the hope that it will be useful,
+10:  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+11:  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+12:  * GNU General Public License for more details.
+13:  *
+14:  * You should have received a copy of the GNU General Public License
+15:  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+16:  *
+17:  * For technical support : 
+18:  *     <rdc_xorg@rdc.com.tw>
+19:  */
+20: 
+21:  
+22: #ifdef HAVE_CONFIG_H
+23: #include <config.h>
+24: #endif
+25: 
+26: #include <stdio.h>
+27: #include <unistd.h>
+28: #include <fcntl.h>
+29: #include <errno.h>
+30: 
+31: #include "xf86.h"
+32: #include "xf86_OSproc.h"
+33: #include "xf86cmap.h"
+34: #include "compiler.h"
+35: #include "vgaHW.h"
+36: #include "mipointer.h"
+37: #include "micmap.h"
+38: 
+39: #include "fb.h"
+40: #include "regionstr.h"
+41: #include "xf86xv.h"
+42: #include <X11/extensions/Xv.h>
+43: #include "vbe.h"
+44: 
+45: #include "xf86PciInfo.h"
+46: #include "xf86Pci.h"
+47: 
+48: 
+49: #include "xf86fbman.h"
+50: 
+51: 
+52: #ifdef HAVE_XAA
+53: #include "xaa.h"
+54: #endif
+55: #include "xaarop.h"
+56: 
+57: 
+58: #include "xf86Cursor.h"
+59: 
+60: 
+61: #include "rdc.h"
+62: #include "rdc_extension.h"
+63: 
+64: 
+65: Bool RDCMapMem(ScrnInfoPtr pScrn);
+66: Bool RDCUnmapMem(ScrnInfoPtr pScrn);
+67: Bool RDCMapMMIO(ScrnInfoPtr pScrn);
+68: void RDCUnmapMMIO(ScrnInfoPtr pScrn);
+69: Bool RDCMapVBIOS(ScrnInfoPtr pScrn);
+70: Bool RDCUnmapVBIOS(ScrnInfoPtr pScrn);
+71: ULONG EC_ReadPortUchar(BYTE *port, BYTE *value);
+72: void EC_WritePortUchar(BYTE *port, BYTE data);
+73: void EC_DetectCaps(ScrnInfoPtr pScrn, ECINFO* pECChip);
+74: 
+75: 
+76: 
+77: Bool
+78: RDCMapMem(ScrnInfoPtr pScrn)
+79: {
+80:     RDCRecPtr pRDC = RDCPTR(pScrn);
+81:     
+82: #if XSERVER_LIBPCIACCESS
+83:     struct pci_device *const device = pRDC->PciInfo;
+84:     int err;
+85:     
+86:     err = pci_device_map_range(device, pRDC->FBPhysAddr, pRDC->FbMapSize, 
+87:                                    PCI_DEV_MAP_FLAG_WRITABLE | PCI_DEV_MAP_FLAG_WRITE_COMBINE,
+88:                                    (void **) &pRDC->FBVirtualAddr);
+89:     
+90:     if (err)
+91:     {
+92:         xf86DrvMsg (pScrn->scrnIndex, X_ERROR,
+93:         "Unable to map frame buffer BAR. %s (%d)\n",
+94:         strerror (err), err);
+95:         return FALSE;
+96:     }
+97: #else
+98:     pRDC->FBVirtualAddr = xf86MapPciMem(pScrn->scrnIndex, VIDMEM_FRAMEBUFFER,
+99:                                         pRDC->PciTag,
+100:                                         pRDC->FBPhysAddr, pRDC->FbMapSize);
+101: #endif
+102: 
+103:     if (!pRDC->FBVirtualAddr)
+104:         return FALSE;
+105: 
+106:     return TRUE;
+107: }
+108: 
+109: Bool
+110: RDCUnmapMem(ScrnInfoPtr pScrn)
+111: {
+112:     RDCRecPtr pRDC = RDCPTR(pScrn);
+113: 
+114: #if XSERVER_LIBPCIACCESS
+115:        pci_device_unmap_range (pRDC->PciInfo, pRDC->FBVirtualAddr, pRDC->FbMapSize);
+116: #else 
+117:     xf86UnMapVidMem(pScrn->scrnIndex, (pointer) pRDC->FBVirtualAddr,
+118:                     pRDC->FbMapSize);
+119: #endif
+120: 
+121:     pRDC->FBVirtualAddr = 0;
+122:    
+123:     return TRUE;
+124: }
+125: 
+126: 
+127: Bool
+128: RDCMapMMIO(ScrnInfoPtr pScrn)
+129: {
+130:    int mmioFlags;
+131:     RDCRecPtr pRDC = RDCPTR(pScrn);
+132: 
+133: #if !defined(__alpha__)
+134:     mmioFlags = VIDMEM_MMIO | VIDMEM_READSIDEEFFECT;
+135: #else
+136:     mmioFlags = VIDMEM_MMIO | VIDMEM_READSIDEEFFECT | VIDMEM_SPARSE;
+137: #endif
+138: 
+139: #if XSERVER_LIBPCIACCESS
+140:     struct pci_device *const device = pRDC->PciInfo;
+141:         
+142:     pci_device_map_range(device, pRDC->MMIOPhysAddr, pRDC->MMIOMapSize,
+143:                          PCI_DEV_MAP_FLAG_WRITABLE | PCI_DEV_MAP_FLAG_WRITE_COMBINE,
+144:                          (void **) &pRDC->MMIOVirtualAddr);
+145: #else
+146:     pRDC->MMIOVirtualAddr = xf86MapPciMem(pScrn->scrnIndex, mmioFlags,
+147:                                           pRDC->PciTag,
+148:                                           pRDC->MMIOPhysAddr, pRDC->MMIOMapSize);
+149: #endif
+150: 
+151:     if (!pRDC->MMIOVirtualAddr)
+152:         return FALSE;
+153: 
+154:     return TRUE;
+155: }
+156: 
+157: void
+158: RDCUnmapMMIO(ScrnInfoPtr pScrn)
+159: {
+160:     RDCRecPtr pRDC = RDCPTR(pScrn);
+161: 
+162: #if XSERVER_LIBPCIACCESS
+163:         pci_device_unmap_range (pRDC->PciInfo, pRDC->MMIOVirtualAddr, pRDC->MMIOMapSize);
+164: #else
+165:     xf86UnMapVidMem(pScrn->scrnIndex, (pointer) pRDC->MMIOVirtualAddr,
+166:                     pRDC->MMIOMapSize);
+167: #endif
+168: 
+169:     pRDC->MMIOVirtualAddr = 0;
+170:    
+171: }
+172: 
+173: 
+174: Bool RDCMapVBIOS(ScrnInfoPtr pScrn)
+175: {
+176:     RDCRecPtr   pRDC = RDCPTR(pScrn);
+177:     FILE        *fpVBIOS;
+178:     int         i;
+179:     Bool        bVBIOSExist = FALSE;
+180:     WORD        VenID, DevID;
+181: 
+182:     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Enter RDCMapVBIOS()==\n");
+183:     pRDC->ulROMType = 0;
+184: 
+185:     
+186:     if (pRDC->ulROMType == 0)
+187:     {
+188: #if XSERVER_LIBPCIACCESS
+189:         pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);
+190:         if (pRDC->BIOSVirtualAddr &&
+191:             pci_device_read_rom(pRDC->PciInfo, pRDC->BIOSVirtualAddr) == 0)
+192:         {
+193:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "Read VBIOS from PCI ROM\n");
+194:         }
+195:         else
+196:         {
+197:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "Read VBIOS from PCI ROM FAILED\n");
+198:             xfree(pRDC->BIOSVirtualAddr);
+199:             pRDC->BIOSVirtualAddr = NULL;
+200:         }
+201: #else
+202:         pRDC->BIOSVirtualAddr = xf86MapVidMem(pScrn->scrnIndex, VIDMEM_READONLY, BIOS_ROM_PHY_BASE, BIOS_ROM_SIZE);
+203: #endif
+204: 
+205:         
+206:         if (pRDC->BIOSVirtualAddr)
+207:         {
+208:             VenID = *(USHORT*)(pRDC->BIOSVirtualAddr+0x40);
+209:             DevID = *(USHORT*)(pRDC->BIOSVirtualAddr+0x42);
+210: 
+211:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "Vendor ID = %X, Device ID = %X\n", VenID, DevID);
+212: 
+213:             if (VenID == PCI_VENDOR_RDC)
+214:             {
+215:                 if (DevID == PCI_CHIP_M2010 ||
+216:                     DevID == PCI_CHIP_M2011 ||
+217:                     DevID == PCI_CHIP_M2012 ||
+218:                     DevID == PCI_CHIP_M2013 ||
+219:                     DevID == PCI_CHIP_M2014 ||
+220:                     DevID == PCI_CHIP_M2015 ||
+221:                     DevID == PCI_CHIP_M2200 ||
+222:                     DevID == PCI_CHIP_M2010_A0)
+223:                 {
+224:                     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "VBIOS exist\n");
+225:                     bVBIOSExist = TRUE;
+226:                 };
+227:             };
+228:         }
+229:         else
+230:         {
+231:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "No VBIOS buffer available, trying ROM file\n");
+232:         }
+233:         
+234:         if (bVBIOSExist)
+235:         {
+236:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, 0, "pRDC->BIOSVirtualAddr = 0x%08x\n", pRDC->BIOSVirtualAddr);
+237: #if XSERVER_LIBPCIACCESS
+238:             pRDC->ulROMType = 2;
+239: #else
+240:             pRDC->ulROMType = 1;
+241: #endif
+242:         }
+243:         else
+244:         {
+245:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "VBIOS not exist\n");
+246:         }
+247:     }
+248: 
+249:     
+250:     if (pRDC->ulROMType == 0)
+251:     {
+252:         
+253:         xfree(pRDC->BIOSVirtualAddr);
+254:         pRDC->BIOSVirtualAddr = NULL;
+255: 
+256:         fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+257:         if (!fpVBIOS)
+258:         {
+259:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/M2012-0.0.8.rom\" not found()==\n");
+260:         }
+261:         else
+262:         {
+263:             pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);
+264:             pRDC->ulROMType = 2;
+265:             for (i = 0; i < BIOS_ROM_SIZE; i++)
+266:             {
+267:                 fscanf(fpVBIOS, "%c", pRDC->BIOSVirtualAddr+i);
+268:             }
+269:             fclose (fpVBIOS);
+270:         }
+271:     }
+272: 
+273:     if (pRDC->ulROMType == 0)
+274:     {
+275:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit1 RDCMapVBIOS()== No VBIOS\n");
+276:         return FALSE; 
+277:     }
+278: 
+279:     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "pRDC->ulROMType = %d\n", pRDC->ulROMType);
+280: 
+281:     if ((*(USHORT*)pRDC->BIOSVirtualAddr == 0xAA55) && (*(USHORT*)(pRDC->BIOSVirtualAddr+0x40) == PCI_VENDOR_RDC))
+282:     {
+283:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit RDCMapVBIOS()== return TRUE\n");
+284:         return TRUE;
+285:     }
+286:     else
+287:     {
+288:         RDCUnmapVBIOS(pScrn);
+289: 
+290:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit2 RDCMapVBIOS()== Not RDC VBIOS\n");
+291:         return FALSE; 
+292:     }
+293: }
+294: 
+295: Bool RDCUnmapVBIOS(ScrnInfoPtr pScrn)
+296: {
+297:     RDCRecPtr pRDC = RDCPTR(pScrn);
+298: 
+299:     if (pRDC->ulROMType == 1)
+300:     {
+301: #ifndef XSERVER_LIBPCIACCESS
+302:         xf86UnMapVidMem(pScrn->scrnIndex, (pointer) pRDC->BIOSVirtualAddr, BIOS_ROM_SIZE);
+303: #else
+304:         xfree(pRDC->BIOSVirtualAddr);
+305: #endif
+306:     }
+307:     else if (pRDC->ulROMType == 2)
+308:     {
+309:         xfree(pRDC->BIOSVirtualAddr);
+310:     }
+311:     pRDC->BIOSVirtualAddr = 0;
+312:    
+313:     return TRUE;
+314: }
+315: 
+316: 
+317: static int EC_port_fd = -1;
+318: 
+319: static int EC_get_port_fd(void)
+320: {
+321:     if (EC_port_fd < 0)
+322:         EC_port_fd = open("/dev/port", O_RDWR);
+323:     return EC_port_fd;
+324: }
+325: 
+326: static int EC_read_status(int fd, BYTE *status)
+327: {
+328:     if (lseek(fd, 0x66, SEEK_SET) < 0)
+329:         return 0;
+330:     return read(fd, status, 1) == 1;
+331: }
+332: 
+333: /* Spin on the EC status register without sleeping. ECs respond within a few
+334:  * microseconds, so a short spin is enough; on systems without an EC the
+335:  * spin gives up quickly instead of waiting on tick-granularity usleep(). */
+336: static int EC_wait_ready(int fd, int want_set)
+337: {
+338:     int i;
+339:     BYTE status;
+340:     for (i = 0; i < 500; i++)
+341:     {
+342:         if (!EC_read_status(fd, &status))
+343:             return 0;
+344:         if (want_set ? (status & BIT0) : !(status & BIT1))
+345:             return 1;
+346:     }
+347:     return 0;
+348: }
+349: 
+350: ULONG EC_ReadPortUchar(BYTE *port, BYTE *value)
+351: {
+352:     xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Enter EC_ReadPortUchar()\n");
+353: 
+354:     int fd = EC_get_port_fd();
+355:     if (fd < 0)
+356:         return EC_ACCESS_FAIL;
+357:     if (!EC_wait_ready(fd, 1))
+358:         return EC_ACCESS_FAIL;
+359:     if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0 &&
+360:         read(fd, value, 1) == 1)
+361:         return EC_ACCESS_SUCCESS;
+362: 
+363:     return EC_ACCESS_FAIL;
+364: };
+365: 
+366: void EC_WritePortUchar(BYTE *port, BYTE data)
+367: {
+368:     xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Enter EC_WritePortUchar()\n");
+369:     
+370:     int fd = EC_get_port_fd();
+371:     if (fd < 0)
+372:         return;
+373:     if (!EC_wait_ready(fd, 0))
+374:         return;
+375:     if (lseek(fd, (off_t)(uintptr_t)port, SEEK_SET) >= 0)
+376:         write(fd, &data, 1);
+377: 
+378:     xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Leave EC_WritePortUchar()\n");
+379: };
+380: 
+381: void EC_DetectCaps(ScrnInfoPtr pScrn, ECINFO* pECChip)
+382: {
+383:     xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Enter EC_DetectCaps()\n");
+384:     
+385:     BYTE bP41Level = 0x0, bP80Level = 0x0, bP41temp = 0x0, bP80temp = 0x0;
+386:     ULONG bSuccess = EC_ACCESS_FAIL;
+387: 
+388:     
+389:     EC_WritePortUchar((BYTE*)0x66, 0x41);
+390:     bSuccess = EC_ReadPortUchar((BYTE*)0x62,&bP41Level);
+391: 
+392:     
+393:     EC_WritePortUchar((BYTE*)0x66, 0x80);
+394:     EC_WritePortUchar((BYTE*)0x62, 0x95);
+395:     bSuccess = EC_ReadPortUchar((BYTE*)0x62,&bP80Level);
+396: 
+397:     
+398:     EC_WritePortUchar((BYTE*)0x66, 0x40);
+399:     EC_WritePortUchar((BYTE*)0x62, 0xD);
+400: 
+401:     
+402:     EC_WritePortUchar((BYTE*)0x66, 0x41);
+403:     bSuccess = EC_ReadPortUchar((BYTE*)0x62,&bP41temp);
+404: 
+405:     
+406:     EC_WritePortUchar((BYTE*)0x66, 0x80);
+407:     EC_WritePortUchar((BYTE*)0x62, 0x95);
+408:     bSuccess = EC_ReadPortUchar((BYTE*)0x62,&bP80temp);
+409: 
+410:     if(0xD == bP41temp)
+411:     {
+412:         EC_WritePortUchar((BYTE*)0x66, 0x40);
+413:         EC_WritePortUchar((BYTE*)0x62, bP41Level);
+414:         pECChip->bECExist = TRUE;
+415:         pECChip->bNewEC = TRUE;
+416:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "RDC: New EC has been detected.\n");
+417:     }
+418:     else if(0xD == bP80temp)
+419:     {
+420:         EC_WritePortUchar((BYTE*)0x66, 0x40);
+421:         EC_WritePortUchar((BYTE*)0x62, bP80Level);
+422:         pECChip->bECExist = TRUE;
+423:         pECChip->bNewEC = FALSE;
+424:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "RDC: Old EC has been detected.\n");
+425:     }
+426:     else
+427:     {
+428:         pECChip->bECExist = FALSE;
+429:         pECChip->bNewEC = FALSE;
+430:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "RDC: EC has been NOT detected.\n");
+431:     }
+432: 
+433:     xf86DrvMsgVerb(0, X_INFO, InternalLevel, "==Leave EC_DetectCaps()\n");            
+434:     return;
+435: }
+436: 
+
+(End of file - total 436 lines)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.5s)
+
+_Thinking:_
+
+Now let me look at the current rdc.h (the option table and BIOS_ROM_PATH_FILE), and check how RDCMapVBIOS is called in PreInit (before Options are processed or after).
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc.h",
+  "limit": 120,
+  "offset": 155
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/src/rdc.h</path>
+<type>file</type>
+<content>
+155: #ifndef PCI_CHIP_M2200
+156: #define     PCI_CHIP_M2200          0x2200
+157: #endif
+158: 
+159: typedef enum {
+160:     OPTION_NOACCEL,
+161:     OPTION_MMIO2D,   
+162:     OPTION_SW_CURSOR,
+163:     OPTION_HWC_NUM,
+164:     OPTION_ENG_CAPS,   
+165:     OPTION_DBG_SELECT,
+166:     OPTION_NO_DDC,
+167:     OPTION_ACCELMETHOD,
+168:     OPTION_HRATIO,
+169:     OPTION_VRATIO,
+170:     OPTION_RANDRROTATION,    
+171:     OPTION_DOWN_SCALE,
+172:     OPTION_DEFAULT_MODE
+173: } RDCOpts;
+174: 
+175: static const OptionInfoRec RDCOptions[] = {
+176:     {OPTION_NOACCEL,       "NoAccel",       OPTV_BOOLEAN,  {0}, TRUE},
+177:     {OPTION_MMIO2D,        "MMIO2D",        OPTV_BOOLEAN,  {0}, FALSE},   
+178:     {OPTION_SW_CURSOR,     "SWCursor",      OPTV_BOOLEAN,  {0}, TRUE},    
+179:     {OPTION_HWC_NUM,       "HWCNumber",     OPTV_INTEGER,  {0}, FALSE},
+180:     {OPTION_ENG_CAPS,      "ENGCaps",       OPTV_INTEGER,  {0}, FALSE},                    
+181:     {OPTION_NO_DDC,        "NoDDC",         OPTV_BOOLEAN,  {0}, FALSE},
+182:     {OPTION_ACCELMETHOD,   "AccelMethod",   OPTV_STRING,   {0}, FALSE},
+183:     {OPTION_HRATIO,         "HRatio",         OPTV_INTEGER,    {0},    FALSE},
+184:     {OPTION_VRATIO,         "VRatio",         OPTV_INTEGER,    {0},    FALSE},    
+185:     {OPTION_RANDRROTATION, "RandRRotation", OPTV_BOOLEAN,  {0}, FALSE},
+186:     {OPTION_DOWN_SCALE,    "DownScale",     OPTV_BOOLEAN,  {0}, FALSE},
+187:     {OPTION_DEFAULT_MODE,  "DefaultMode",   OPTV_STRING,   {0}, FALSE},
+188:     {-1,                   NULL,            OPTV_NONE,     {0}, FALSE}
+189: };
+190: 
+191: 
+192: static SymTabRec RDCChipsets[] = {
+193:     {PCI_CHIP_M2010_A0, "M2010_A0"},
+194:     {PCI_CHIP_M2010, "M2010"},
+195:     {PCI_CHIP_M2011, "M2011"},
+196:     {PCI_CHIP_M2012, "M2012"},
+197:     {PCI_CHIP_M2013, "M2013"},
+198:     {PCI_CHIP_M2014, "M2014"},
+199:     {PCI_CHIP_M2015, "M2015"},
+200:     {PCI_CHIP_M2200, "M2200"},
+201:     {-1,              NULL}
+202: };
+203: 
+204: static PciChipsets RDCPciChipsets[] = {
+205:     {PCI_CHIP_M2010, PCI_CHIP_M2010, RES_SHARED_VGA},
+206:     {PCI_CHIP_M2010_A0, PCI_CHIP_M2010_A0, RES_SHARED_VGA},
+207:     {PCI_CHIP_M2011, PCI_CHIP_M2011, RES_SHARED_VGA},
+208:     {PCI_CHIP_M2012, PCI_CHIP_M2012, RES_SHARED_VGA},
+209:     {PCI_CHIP_M2013, PCI_CHIP_M2013, RES_SHARED_VGA},
+210:     {PCI_CHIP_M2014, PCI_CHIP_M2014, RES_SHARED_VGA},
+211:     {PCI_CHIP_M2015, PCI_CHIP_M2015, RES_SHARED_VGA},
+212:     {PCI_CHIP_M2200, PCI_CHIP_M2200, RES_SHARED_VGA},
+213:     {-1,              -1,              RES_UNDEFINED }
+214: };
+215: 
+216: 
+217: 
+218: 
+219: #define DMPDX2                      0x34504D44
+220: #define CIDOffset                   0x90
+221: 
+222: 
+223: #define R3308NBID                   0x602217f3
+224: #define DirectAccessFB              BIT24
+225: 
+226: typedef enum _CHIP_ID {
+227:     VGALegacy,
+228:     M2010,
+229:     M2011,
+230:     M2012,
+231:     M2013,
+232:     M2014,
+233:     R2200
+234: } CHIP_ID;
+235: 
+236: 
+237: #define RDC_NAME                "RDC GFX R0.1.1"
+238: #define RDC_DRIVER_NAME         "rdcm15"
+239: #define RDC_MAJOR_VERSION       0
+240: #define RDC_MINOR_VERSION       0
+241: #define RDC_PATCH_VERSION       1
+242: #define RDC_VERSION    \
+243:         ((RDC_MAJOR_VERSION << 20) | (RDC_MINOR_VERSION << 10) | RDC_PATCH_VERSION)
+244: 
+245: 
+246: #define DEFAULT_VIDEOMEM_SIZE   0x00800000
+247: #define DEFAULT_MMIO_SIZE       0x00020000
+248: #define DEFAULT_CMDQ_SIZE       CMD_QUEUE_SIZE_1M
+249: #define MIN_CMDQ_SIZE           0x00040000
+250: #define CMD_QUEUE_GUARD_BAND    0x00000020
+251: #define DEFAULT_HWC_NUM         0x00000002
+252: #define CAPTURE_BUFFER_SIZE     0x00700000
+253: 
+254: 
+255: #define ErrorLevel             0    
+256: #define DefaultLevel           4    
+257: #define InfoVideo              5    
+258: #define InfoLevel              6    
+259: #define InternalLevel          7    
+260: 
+261: 
+262: #define LCD_TIMING          0x00010000
+263: 
+264: 
+265: #define  CR_HEADER_ERROR             BIT10
+266: #define  CR_2D_IDLE                  BIT12
+267: #define  CR_DMA_IDLE                 BIT13
+268: #define  CR_VIDEO_IDLE               BIT14
+269: #define  CR_CR_IDLE                  BIT15
+270: 
+271: #define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom"
+272: #define BIOS_ROM_SIZE           32*1024
+273: #define BIOS_ROM_PHY_BASE       0xC0000
+274: 
+
+(Showing lines 155-274 of 885. Use offset=275 to continue.)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.8s)
+
+_Thinking:_
+
+Now let me look at where RDCMapVBIOS is called in rdc_driver.c PreInit to understand the ordering (Options processed before RDCMapVBIOS?).
+
+**Tool: grep**
+
+**Input:**
+```json
+{
+  "include": "*.c",
+  "path": "/home/liaronce/git/xf86-video-rdc/src",
+  "pattern": "RDCMapVBIOS\\("
+}
+```
+
+**Output:**
+```
+Found 12 matches
+/home/liaronce/git/xf86-video-rdc/src/rdc_tool.c:
+  Line 69: Bool RDCMapVBIOS(ScrnInfoPtr pScrn);
+
+  Line 174: Bool RDCMapVBIOS(ScrnInfoPtr pScrn)
+
+  Line 182:     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Enter RDCMapVBIOS()==\n");
+
+  Line 275:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit1 RDCMapVBIOS()== No VBIOS\n");
+
+  Line 283:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit RDCMapVBIOS()== return TRUE\n");
+
+  Line 290:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit2 RDCMapVBIOS()== Not RDC VBIOS\n");
+
+
+/home/liaronce/git/xf86-video-rdc/src/rdc_driver.c:
+  Line 73: extern Bool RDCMapVBIOS(ScrnInfoPtr pScrn);
+
+  Line 920:     if (!RDCMapVBIOS(pScrn))
+
+  Line 1399:         if (!RDCMapVBIOS(pScrn))
+
+  Line 1401:             xf86DrvMsg(scrnIndex, X_ERROR, "RDCMapVBIOS() failed in RDCScreenInit\n");
+
+
+/home/liaronce/git/xf86-video-rdc/src/rdcdual_driver.c:
+  Line 73: extern Bool RDCMapVBIOS(ScrnInfoPtr pScrn);
+
+  Line 741:     if (!RDCMapVBIOS(pScrn))
+
+```
+
+**Tool: grep**
+
+**Input:**
+```json
+{
+  "include": "*.c",
+  "path": "/home/liaronce/git/xf86-video-rdc/src",
+  "pattern": "BIOS_ROM_PATH_FILE|firmware-rdc|VBIOS.*Option|OPTION_VBIOS"
+}
+```
+
+**Output:**
+```
+Found 1 matches
+/home/liaronce/git/xf86-video-rdc/src/rdc_tool.c:
+  Line 256:         fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.6s)
+
+_Thinking:_
+
+Let me check the ordering in rdc_driver.c PreInit — where RDCMapVBIOS is called (line 920) relative to xf86CollectOptions/xf86ProcessOptions. Let me look at the region around line 715-930.
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc_driver.c",
+  "limit": 60,
+  "offset": 714
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/src/rdc_driver.c</path>
+<type>file</type>
+<content>
+714:     
+715:     xf86CollectOptions(pScrn, NULL);   
+716:     if (!(pRDC->Options = xalloc(sizeof(RDCOptions))))
+717:     {      
+718:         RDCFreeRec(pScrn);
+719:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit15 RDCPreInit()== return FALSE\n");
+720:         return FALSE;
+721:     }      
+722:     memcpy(pRDC->Options, RDCOptions, sizeof(RDCOptions));
+723:     xf86ProcessOptions(pScrn->scrnIndex, pScrn->options, pRDC->Options);
+724: 
+725:     
+726:     if (xf86ReturnOptValBool(pRDC->Options, OPTION_RANDRROTATION, FALSE))
+727:     {
+728:         xf86DrvMsgVerb(0, X_INFO, DefaultLevel, "Option RandRRotation = true\n");
+729:         pRDC->bRandRRotation = TRUE;
+730:         pRDC->rotate = RR_Rotate_0;
+731:     }
+732: 
+733:     
+734:     
+735:     if (xf86ReturnOptValBool(pRDC->Options, OPTION_DOWN_SCALE, FALSE))
+736:     {
+737:         xf86DrvMsgVerb(0, X_INFO, DefaultLevel, "Option DownScale = true\n");
+738:         pRDC->DeviceInfo.ScalerConfig.EnableDownScaling = TRUE;
+739:     }
+740:     
+741:     
+742:     if (xf86ReturnOptValBool(pRDC->Options, OPTION_MMIO2D, FALSE)) 
+743:     {
+744:         pRDC->MMIO2D = TRUE;
+745:     }
+746:  
+747:     
+748:     pRDC->bHRatio = pRDC->bVRatio = 100;
+749:     if (!xf86GetOptValULong(pRDC->Options, OPTION_HRATIO, &pRDC->bHRatio)) 
+750:     {
+751:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "No HDMI underscan horizotal ratio options found\n");          
+752:     }
+753:     else
+754:     {
+755:         if(pRDC->bHRatio > 100)
+756:             pRDC->bHRatio = 100;
+757:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "HDMI underscan horizotal ratio %d\n",pRDC->bHRatio); 
+758:     }
+759: 
+760:     
+761:     if (!xf86GetOptValULong(pRDC->Options, OPTION_VRATIO, &pRDC->bVRatio)) 
+762:     {
+763:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "No HDMI underscan vertical ratio options found\n");          
+764:     }
+765:     else
+766:     {      
+767:         if(pRDC->bVRatio > 100)
+768:             pRDC->bVRatio = 100;
+769:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "HDMI underscan vertical ratio %d\n",pRDC->bVRatio);    
+770:     }
+771: 
+772:     
+773:     
+
+(Showing lines 714-773 of 2963. Use offset=774 to continue.)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 7.7s)
+
+_Thinking:_
+
+Good — `xf86CollectOptions` + `xf86ProcessOptions` happen at line 715-723, and `RDCMapVBIOS` is called at line 920. So by the time RDCMapVBIOS runs, `pRDC->Options` is populated and I can read a `VBIOS` option from it inside RDCMapVBIOS.
+
+Now, the design. The user wants:
+1. Install VBIOS files from `misc/` to `/usr/lib/firmware-rdc` (create dir if missing at install).
+2. Driver reads VBIOS from `/usr/lib/firmware-rdc`.
+3. Config-file option to select which VBIOS file to use ("Vendor" section? — I'll interpret as a driver option in the Device section; the user's wording "Vendor" likely refers to... hmm).
+
+Wait — let me reconsider the "Vendor" wording again. In Xorg config, the sections are: ServerLayout, Files, Module, InputDevice, Monitor, Device, Screen, ServerFlags, DRI, Extensions, Vendor. Yes! There IS a "Vendor" section in Xorg config (used for OS-specific/vendor configuration, e.g. `Option "Randr"`? no...). Actually the "Vendor" section in xorg.conf is used by some drivers/OS vendors for specific options. It's a real Xorg config section: `Section "Vendor" ... EndSection`. Hmm — but the Vendor section's options aren't accessible via `pScrn->options` (those come from the Device section).
+
+Actually, in xorg.conf, a "Vendor" section contains options that are read via... hmm. Let me think. The Vendor section options are accessible via `xf86ConfigFileInfo`? Actually, the Vendor section is processed by `xf86VendorInit`? Let me check the xorg-server source.
+
+Actually, I recall: The "Vendor" section in xorg.conf is defined and its options are accessible to drivers via... Let me check the server source. There's a function `xf86VendorInit`? Let me search the xorg-server source I have.
+
+Actually — let me reconsider. The user wrote: "我需要在配置文件新增"Vendor"部分中使其可配置指定的vbios" — "I need to add, in the config file's 'Vendor' section, the ability to configure the specified vbios". 
+
+Hmm, this is ambiguous. Two interpretations:
+(a) Add a "Vendor" section to the 00-rdc.conf file with an option to select the VBIOS.
+(b) Add an option in the Device section (which the user loosely calls "Vendor" because of "VendorName" in the Monitor section? unlikely).
+
+Given Xorg DOES support a `Vendor` section, interpretation (a) is plausible. But how would a driver read options from the Vendor section? Let me check the Xorg server.
+
+Actually — in xorg.conf, the Vendor section options are parsed by the server and can be accessed via `xf86GetConfigValue`? No... Let me look at how the Vendor section is processed in xorg-server.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /tmp/kilo/xorg-server-21.1.24 && grep -rn \"Vendor\" hw/xfree86/common/xf86Config.c | head -20",
+  "description": "Find Vendor section handling in xorg config"
+}
+```
+
+**Output:**
+```
+/usr/bin/bash: 第 1 行：cd: /tmp/kilo/xorg-server-21.1.24: 没有那个文件或目录
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 71.2s)
+
+_Thinking:_
+
+The xorg-server source in /tmp/kilo was removed (the tmp dir may have been cleaned between sessions). Let me re-download or just reason from memory.
+
+The Xorg "Vendor" section: In xorg.conf, there's a `Vendor` section documented in xorg.conf(5):
+```
+Section "Vendor"
+    Option "xxx" "yyy"
+EndSection
+```
+Options in the Vendor section are accessed via `xf86VendorInit`? Actually, I recall the Vendor section options are accessible via the function `xf86GetConfigValue`? No.
+
+Let me recall xorg.conf(5): "Vendor" section — "This section is used by some vendors (e.g. those based on XFree86) to pass vendor-specific options." The options are read via... I believe there's a `XF86_VENDOR_OPTIONS` or the server stores them and drivers access via `xf86GetVendorOption`? Hmm, not sure it's a standard API.
+
+Actually — I don't think there's a well-supported API for drivers to read Vendor-section options. The standard mechanism for driver configuration IS the Device section's `Option` lines, read via `xf86ProcessOptions`.
+
+Given the user's phrasing and the practical reality, I believe the user wants: in the config file (00-rdc.conf), a configurable option to specify which VBIOS file to use. Whether it's in a "Vendor" section or Device section, the driver needs to read it. Since the driver reads options from the Device section via pRDC->Options, the practical implementation is a Device-section option.
+
+But the user explicitly said "Vendor" 部分. Hmm. Let me reconsider — maybe they want me to add a new "Vendor" section to 00-rdc.conf and have the driver read it. Let me check if the Xorg server exposes Vendor-section options to drivers.
+
+Actually — I remember now! In xorg.conf(5) man page:
+
+```
+Vendor section:  This section is used to provide vendor-specific configuration information.  It can contain any number of Option entries...
+```
+
+And the server reads it. The options from the Vendor section are merged into... hmm. Let me think about `xf86ConfigFileInfo`... 
+
+Actually, I recall that the Vendor section is used by the "xorg.conf.d" Vendor files? No.
+
+Let me just check the actual xorg source. Let me re-download it or check if it's cached somewhere.
+
+Actually, I found the cleanest path: Let me check whether the vendor section options are accessible. In xorg-server's xf86Config.c, `xf86VendorInit`? Let me search the web memory... The Vendor section in xorg.conf is processed in `xf86Config.c`:
+
+```c
+    if (xf86ConfigFile && !strcasecmp(fn, "vendor")) {
+        ...read vendor options...
+    }
+```
+
+Hmm. Actually the Vendor section is used by the server itself for e.g. `Option "NoRandr"`? I don't recall exactly.
+
+Let me take a pragmatic approach. The user's core need is clear:
+1. VBIOS files installed to `/usr/lib/firmware-rdc`.
+2. Driver reads from there.
+3. Config option to pick the VBIOS file.
+
+The ambiguity is just where in the config the option lives. Since the driver's standard config mechanism is the Device section, and a "Vendor" section isn't a standard driver-config mechanism, I'll implement the option in the **Device section** as `Option "VBIOS" "M2012-0.0.8.rom"`. This is the correct, working approach.
+
+But wait — the user was very specific about "Vendor". Let me ask for clarification via the question tool? The instruction says use question tool when I need an actual answer. This is a genuine ambiguity that affects the implementation. However, I could also just implement the Device-section option AND add a "Vendor" section as a comment... no.
+
+Hmm, actually — let me reconsider. Maybe the user means the "Monitor" section which has "VendorName"? No, that's for monitor EDID display.
+
+OR — maybe they think of the config file as having a section for the device vendor (RDC). The 00-rdc.conf currently has "Device" section. Perhaps they call the "Device" section "Vendor" section informally? 
+
+Let me look at this from the angle of what's implementable and correct, and just go with the Device-section option, but also mention that Xorg doesn't have a driver-accessible "Vendor" section mechanism and explain. Actually — let me verify whether Xorg supports reading Vendor section options first, because if it does, I should honor the user's request literally.
+
+Let me download the xorg-server source again.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "ls /tmp/kilo/ 2>/dev/null; curl -sL --max-time 60 -o /tmp/kilo/xorg-server-21.1.24.tar.gz https://www.x.org/releases/individual/xserver/xorg-server-21.1.24.tar.gz 2>&1 && cd /tmp/kilo && tar xzf xorg-server-21.1.24.tar.gz && echo OK",
+  "description": "Re-fetch xorg-server source"
+}
+```
+
+**Output:**
+```
+(no output)
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.9s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "ls /tmp/kilo/ 2>&1; ls /tmp/kilo/xorg-server-21.1.24/hw/xfree86/common/ 2>/dev/null | head",
+  "description": "Check extracted source"
+}
+```
+
+**Output:**
+```
+(no output)
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.9s)
+
+_Thinking:_
+
+The extraction produced no output and /tmp/kilo is empty? The `ls /tmp/kilo` returned nothing. Maybe the tar failed silently (no internet access now?). Let me check.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "ls -la /tmp/kilo/ 2>&1; echo ---; ls -la /tmp/kilo/xorg-server-21.1.24.tar.gz 2>&1",
+  "description": "Check /tmp/kilo contents"
+}
+```
+
+**Output:**
+```
+总计 0
+drwxr-xr-x  2 liaronce liaronce  40  8月22日 22:07 .
+drwxrwxrwt 19 root     root     740  8月22日 22:17 ..
+---
+ls: 无法访问 '/tmp/kilo/xorg-server-21.1.24.tar.gz': 没有那个文件或目录
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 7.2s)
+
+_Thinking:_
+
+No internet access now (curl failed silently and no file). I'll have to reason from memory about the "Vendor" section.
+
+From my knowledge of xorg.conf(5):
+
+```
+Vendor
+    This section is used to provide vendor-specific configuration information.  It can contain any number of Option entries...
+```
+
+And how are these options accessed? I recall the Vendor section is read by the server, and its options are made available through... Actually, I now recall more specifically: The `Vendor` section's options can be accessed by drivers via `xf86GetConfigValue`? No.
+
+Let me think about what actually happens: In xorg-server's `xf86Config.c`, `xf86parseConfig` handles section types. For "Vendor", there's `confVendor` handling. I believe the parsed vendor options are stored globally and accessible via `xf86GetVendorConfigValue` or similar. Actually... 
+
+Hmm, I recall that the Vendor section is primarily used by the X server itself (e.g., "XDarwin"?) and there IS an API: in `xorgConf.h`, there might be `xf86ConfigFileInfo`... 
+
+Actually — you know what, I remember now. In the Xorg documentation (xorg.conf(5)):
+
+> SECTION: Vendor
+> This section is used to provide vendor-specific configuration information.  It can contain any number of Option entries, and any other entries defined by the vendor.  The options are accessible to... 
+
+And in the source, `xf86Config.c` has `xf86VendorInit`? Hmm.
+
+Actually, I'm now fairly sure there's no standard/exported API for a driver module to read Vendor-section options. The standard way drivers get options is the Device section. So the user's "Vendor" section request, taken literally, isn't practically implementable for a loadable driver.
+
+BUT WAIT. Let me reconsider. Maybe there IS. Let me think about the `Vendor` section in the actual server code. In `hw/xfree86/common/xf86Config.c`, there's a function `VendorSection` handling... and I believe the vendor options ARE exposed. Let me recall `xf86Config.h`/`xf86Config.c`... 
+
+I genuinely recall: the Vendor section options are parsed into `xf86VendorOptions`? No...
+
+OK let me take yet another approach — check the installed xorg.conf man page or any installed docs on this system.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "zcat /usr/share/man/man5/xorg.conf.5.gz 2>/dev/null | grep -A25 \"^Vendor\" | head -40; echo ===; ls /usr/share/man/man5/ 2>/dev/null | grep -i xorg",
+  "description": "Check xorg.conf man page for Vendor section"
+}
+```
+
+**Output:**
+```
+===
+xorg.conf.5.xz
+xorg.conf.d.5.xz
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.2s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "xzcat /usr/share/man/man5/xorg.conf.5.xz 2>/dev/null | grep -iA20 \"^vendor\" | head -40",
+  "description": "Read Vendor section docs from man page"
+}
+```
+
+**Output:**
+```
+(no output)
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.2s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "xzcat /usr/share/man/man5/xorg.conf.5.xz 2>/dev/null | grep -in \"vendor\" | head -20",
+  "description": "Search vendor in man page"
+}
+```
+
+**Output:**
+```
+137:This is to separate configuration files from the vendor or 3rd party packages
+182:.BR "Vendor         " "Vendor\-specific configuration"
+1097:.BI "MatchVendor  \*q" matchvendor \*q
+1099:.RI \*q matchvendor \*q
+1100:occurs in the device's vendor name.
+1157:.B NoMatchVendor,
+1610:.BI "VendorName  \*q" vendor \*q
+2087:.BI "Option \*qGlxVendorLibrary\*q \*q" string \*q
+2088:This option specifies a space-separated list of OpenGL vendor libraries to
+2529:.SH "VENDOR SECTION"
+2531:.B Vendor
+2532:section may be used to provide vendor\-specific configuration information.
+2534:.B Vendor
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.2s)
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "xzcat /usr/share/man/man5/xorg.conf.5.xz 2>/dev/null | sed -n '2525,2560p'",
+  "description": "Read full VENDOR SECTION doc"
+}
+```
+
+**Output:**
+```
+This optional section is used to provide some information for the
+Direct Rendering Infrastructure.
+Details about the format of this section can be found on-line at
+.IR <https://dri.freedesktop.org/> .
+.SH "VENDOR SECTION"
+The optional
+.B Vendor
+section may be used to provide vendor\-specific configuration information.
+Multiple
+.B Vendor
+sections may be present, and they may contain an
+.B Identifier
+entry and multiple
+.B Option
+flags.
+The data therein is not used in this release.
+.PP
+.SH "SEE ALSO"
+General:
+.BR X (7),
+.BR Xserver (1),
+.BR Xorg (1),
+.BR cvt (1),
+.BR gtf (1).
+.PP
+.B "Not all modules or interfaces are available on all platforms."
+.PP
+Display drivers:
+.BR apm (4),
+.BR ati (4),
+.BR chips (4),
+.BR cirrus (4),
+.BR cyrix (4),
+.BR fbdev (4),
+.BR glide (4),
+.BR glint (4),
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 15.5s)
+
+_Thinking:_
+
+Confirmed: the `Vendor` section in xorg.conf is documented as "The data therein is not used in this release." — i.e., **the X server does NOT expose Vendor-section options to drivers**. So implementing the VBIOS option via a "Vendor" section is not possible with the standard Xorg config mechanism.
+
+Therefore, the correct and only practical implementation is a **Device-section option** (`Option "VBIOS" "..."`), read via the driver's normal option table.
+
+The user said "Vendor" 部分 — but since the Vendor section is not usable by drivers, I should implement the Device-section option and explain this clearly. Actually — wait. Let me reconsider once more. Perhaps the user wants me to add a "Vendor" section to the config file for documentation purposes? Or maybe they're using "Vendor" loosely to mean "Device" (the section that configures the device/vendor). 
+
+Given the constraint, I'll implement:
+1. `Makefile.am`: install both ROM files to `/usr/lib/firmware-rdc/` (creating dir).
+2. Driver: read VBIOS from `/usr/lib/firmware-rdc/<file>`, default `M2012-0.0.8.rom`, with a configurable option.
+3. Config option: `Option "VBIOS" "M2012-0.0.4.rom"` in the Device section.
+
+I'll explain to the user that the "Vendor" section data is not used by Xorg, so the option lives in the Device section.
+
+Actually — hold on. Let me reconsider the "Vendor" interpretation one more. There's also the possibility the user wants the option in the config to be settable per-vendor, i.e. the firmware files could be named by vendor. But that doesn't change the implementation.
+
+Hmm, wait, actually — I want to reconsider whether I should just ask the user. The instructions: "Use the `question` tool only when you need an actual answer from the user." The design choice here: Device-section option vs Vendor-section. Since the Vendor section is explicitly unusable ("not used in this release"), there's really only ONE correct implementation: Device section option. I'll implement that and explain. No need to ask.
+
+Now let me design the implementation in detail.
+
+### 1. Makefile.am
+
+Currently installs M2012-0.0.8.rom to `$(moduledir)/drivers/`. Change to install BOTH rom files to `/usr/lib/firmware-rdc/` (new dir), creating it if missing.
+
+```makefile
+# Firmware VBIOS files are read by the driver from /usr/lib/firmware-rdc
+FIRMWARE_DIR = /usr/lib/firmware-rdc
+RDC_VBIOS_FILES = M2012-0.0.4.rom M2012-0.0.8.rom
+
+install-data-local:
+	$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers
+	$(MKDIR_P) $(DESTDIR)$(FIRMWARE_DIR)
+	for f in $(RDC_VBIOS_FILES); do \
+		$(INSTALL_DATA) $(srcdir)/misc/$$f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \
+	done
+	@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \
+		... same ...
+	fi
+
+uninstall-local:
+	rm -f $(DESTDIR)$(FIRMWARE_DIR)/M2012-0.0.4.rom
+	rm -f $(DESTDIR)$(FIRMWARE_DIR)/M2012-0.0.8.rom
+	rm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf
+```
+
+Should uninstall remove the firmware-rdc dir if empty? Better to leave the dir. Could use `rmdir` if empty. Keep simple.
+
+Also, should I keep installing the ROM to moduledir/drivers for backward compat? The driver will now read from /usr/lib/firmware-rdc. The old location is no longer used. But there might be existing installs. For clean behavior, remove the old drivers-dir install and only install to firmware-rdc. Also `EXTRA_DIST` needs to include both rom files (currently only M2012-0.0.8.rom). Add M2012-0.0.4.rom.
+
+Wait — EXTRA_DIST currently: `misc/M2012-0.0.8.rom misc/00-rdc.conf`. Add `misc/M2012-0.0.4.rom`.
+
+### 2. rdc.h
+
+- Change `BIOS_ROM_PATH_FILE` → define a firmware directory and default filename:
+```c
+#define BIOS_ROM_PATH_DIR      "/usr/lib/firmware-rdc"
+#define BIOS_ROM_DEFAULT_FILE  "M2012-0.0.8.rom"
+```
+Hmm, but the existing `BIOS_ROM_PATH_FILE` is a full path macro used in rdc_tool.c. I'll replace it with a directory + default file and build the path at runtime (snprintf) so the option can override the filename.
+
+- Add option:
+```c
+OPTION_VBIOS
+...
+{OPTION_VBIOS, "VBIOS", OPTV_STRING, {0}, FALSE},
+```
+And a field in RDCRec to store the resolved path? Or resolve in RDCMapVBIOS each call. Since RDCMapVBIOS is called in PreInit and ScreenInit re-init, resolving each time is fine (build the path string on stack).
+
+### 3. rdc_tool.c RDCMapVBIOS
+
+In the file-fallback section:
+```c
+fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+```
+Replace with building the path:
+```c
+char BIOSPath[512];
+const char *file;
+
+file = xf86GetOptValString(pRDC->Options, OPTION_VBIOS);
+if (!file || !*file)
+    file = BIOS_ROM_DEFAULT_FILE;
+if (file[0] == '/')
+    snprintf(BIOSPath, sizeof(BIOSPath), "%s", file);
+else
+    snprintf(BIOSPath, sizeof(BIOSPath), "%s/%s", BIOS_ROM_PATH_DIR, file);
+fpVBIOS = fopen(BIOSPath, "r");
+```
+
+And update the error message.
+
+Also — `pRDC->Options` must be valid when RDCMapVBIOS is called. In PreInit, options are processed at line 715-723 and RDCMapVBIOS at 920 — OK. In RDCScreenInit re-init (line 1399), Options is still valid (RDCRec persists). OK.
+
+But wait — what about `xf86GetOptValString` returning a pointer that's valid? It returns a pointer into the options table (stored string). Fine.
+
+### 4. misc/00-rdc.conf
+
+Add the commented option in Device section:
+```
+	# VBIOS firmware file used by the driver (searched in /usr/lib/firmware-rdc).
+	# Option "VBIOS" "M2012-0.0.8.rom"
+```
+
+### 5. Also update rdc_tool.c's hardcoded string in error message: "BIOS ROM file \"/usr/lib/xorg/modules/drivers/M2012-0.0.8.rom\" not found()==\n" → use BIOSPath.
+
+Now, let me also reconsider: should the path be `//usr//lib//firmware-rdc//` (the codebase uses `//` separators in the macro)? That's just the original author's quirk (they wrote `//usr//lib//...`). I'll write normal paths.
+
+Also the AGENTS.md and misc/README.md should be updated to reflect the new firmware location.
+
+Let me check misc/README.md content — it documents the ROM files and how to dump. Let me update the paths there.
+
+Let me also check: is there anywhere else that references the ROM path? rdc_tool.c line 259 (error msg), rdc.h line 271. And docs. Let me grep for "xorg/modules/drivers" and "M2012-0.0" references.
+
+The `Vendor` section in xorg.conf is documented as "The data therein is not used in this release" — Xorg exposes no driver API for it. So the configurable VBIOS option must live in the Device section (the standard driver-option mechanism). Let me check all references before editing:
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && grep -rn \"M2012-0.0\\|xorg/modules/drivers\\|BIOS_ROM_PATH\\|firmware\" --include=\"*.c\" --include=\"*.h\" --include=\"*.am\" --include=\"*.md\" --include=\"*.conf\" --include=\"Makefile.am\" . | grep -v \"\\.git/\"",
+  "description": "Find all VBIOS path references"
+}
+```
+
+**Output:**
+```
+./misc/README.md:7:`M2012-0.0.4.rom`: VBIOS for M2012 GPU (dump from `EBOX-3310MX`, BIOS Date: 08/16/2011, SoC is Vortex86MX+)
+./misc/README.md:9:`M2012-0.0.8.rom`: VBIOS for M2012 GPU (dump from `EBOX-3350DX2`, BIOS Date: 02/10/2017, SoC is Vortex86DX2)
+./docs/llm-session.md:3736:225:         fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./docs/llm-session.md:3739:228:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\" not found()==\n");
+./docs/llm-session.md:6014:243: #define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//RDCVBIOS.ROM"
+./docs/llm-session.md:16723:224:         fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./docs/llm-session.md:16726:227:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\" not found()==\n");
+./docs/llm-session.md:16807:The simplest portable approach for modern: attempt to read the legacy ROM region via a sysfs ROM or just fall through to the file-based approach (ulROMType==2). Actually, the driver already has a file-based fallback (`/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`). And also the code has `if (pRDC->ulROMType == 0)` then tries the file. 
+./docs/llm-session.md:16842:Also `pci_device_read_rom` may fail on some systems (no ROM BAR). Fallback: the file-based ROM (`/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`). That fallback is already there (ulROMType==0 → try file).
+./docs/llm-session.md:17892:/bin/sh ../libtool  --tag=CC   --mode=link gcc -I/usr/include/xorg -fvisibility=hidden -I/usr/include/pixman-1 -std=gnu99 -Wno-implicit-function-declaration -g -O2 -module -avoid-version   -o rdcm15_drv.la -rpath /usr/local/lib/xorg/modules/drivers rdc_2dtool.lo rdc_accel.lo rdc_cursor.lo rdc_driver.lo rdc_mode.lo rdc_tool.lo rdc_vgatool.lo rdc_video.lo vidinit.lo rdc_extension.lo gamma.lo CInt10.lo HDMI.lo TV.lo rdcdual_driver.lo rdcdual_display.lo  
+./docs/llm-session.md:19824:  "command": "id -u; which Xorg; ls /usr/lib/xorg/modules/drivers/ 2>/dev/null | head",
+./docs/llm-session.md:19858:  "command": "nm -D /usr/lib/xorg/modules/drivers/vesa_drv.so 2>/dev/null | grep -E \" U \" | grep -iE \"vbe|fb|exa|vgaHW|int10\" | head; echo \"--- how vesa loads vbe ---\"; strings /usr/lib/xorg/modules/drivers/vesa_drv.so 2>/dev/null | grep -iE \"vbe|int10\" | head",
+./docs/llm-session.md:20241:  "command": "cat > /tmp/dlopen_test.c <<'EOF'\n#include <dlfcn.h>\n#include <stdio.h>\nint main(int argc, char **argv) {\n    void *h = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);\n    if (!h) { printf(\"FAIL: %s\\n\", dlerror()); return 1; }\n    printf(\"OK\\n\");\n    dlclose(h);\n    return 0;\n}\nEOF\ngcc -o /tmp/dlopen_test /tmp/dlopen_test.c -ldl && /tmp/dlopen_test /usr/lib/xorg/modules/drivers/vesa_drv.so; /tmp/dlopen_test /usr/lib/xorg/modules/libint10.so",
+./docs/llm-session.md:20248:FAIL: /usr/lib/xorg/modules/drivers/vesa_drv.so: undefined symbol: serverGeneration
+./docs/llm-session.md:21883:  "command": "nm -D /usr/lib/xorg/modules/drivers/fbdev_drv.so 2>/dev/null | grep -iE \"xf86GetRequiredDriverFunctions|xf86RandR12|xf86CrtcScreenInit|xf86InitialConfiguration\" | head; echo \"---strings---\"; strings /usr/lib/xorg/modules/drivers/fbdev_drv.so | grep -iE \"GET_REQUIRED|xf86GetRequired|RandR|Crtc\" | head",
+./docs/llm-session.md:22065:  "command": "nm -D /usr/lib/xorg/modules/drivers/vesa_drv.so 2>/dev/null | grep -iE \"RandR|DriverFunc|Required\" | head; echo \"---undefined---\"; nm -D /usr/lib/xorg/modules/drivers/vesa_drv.so 2>/dev/null | grep \" U \" | grep -iE \"RandR|Required|Crtc\" | head",
+./docs/llm-session.md:22127:  "command": "nm -D /usr/lib/xorg/modules/drivers/vesa_drv.so 2>/dev/null | grep \" U \" | grep -oE \"xf86[A-Za-z0-9]+\" | sort -u | head -40",
+./docs/llm-session.md:27202:1. The driver module `rdcm15_drv.so` wasn't installed to `/usr/lib/xorg/modules/drivers/`.
+./docs/llm-session.md:27206:Actually wait — the auto-config only picks drivers it knows about (scans /usr/lib/xorg/modules/drivers/). If rdcm15_drv.so is installed there, Xorg scans it and would probe it. But the log's auto-config list only shows modesetting, fbdev, vesa. So rdcm15_drv.so is NOT installed in the modules dir (or not loadable).
+./docs/llm-session.md:27214:For (b), Xorg scans the modules directory and calls each driver's identify/probe. If rdcm15_drv.so is in /usr/lib/xorg/modules/drivers/, it would be loaded and probed, and if it matches the PCI device, it becomes a candidate. The log shows ONLY modesetting/fbdev/vesa matched — so rdcm15_drv.so was NOT loaded/scanned.
+./docs/llm-session.md:27217:1. Installed to the wrong path (e.g., they copied rdcm15_drv.so somewhere else, or `make install` installed to /usr/local/lib/xorg/modules/drivers while Xorg looks in /usr/lib/xorg/modules).
+./docs/llm-session.md:27218:   - Recall: configure.ac has `--with-xorg-module-dir=DIR default=$libdir/xorg/modules`. If built with default prefix /usr/local, `make install` installs to `/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so`. But Xorg's ModulePath is `/usr/lib/xorg/modules` (from the log line 33). So the driver went to /usr/local/lib/... and Xorg never sees it!
+./docs/llm-session.md:27226:- The server scans `/usr/lib/xorg/modules/drivers/` for driver modules.
+./docs/llm-session.md:27232:So the fix: install the module to `/usr/lib/xorg/modules/drivers/rdcm15_drv.so` (the actual ModulePath), OR create an xorg.conf.d entry `Driver "rdcm15"` AND ensure the module is in ModulePath.
+./docs/llm-session.md:27262:Default `$libdir` = `$(exec_prefix)/lib` = `/usr/local/lib` if prefix is /usr/local. So `make install` → `/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so`. But Xorg's ModulePath = `/usr/lib/xorg/modules`. → mismatch! The driver gets installed to a path Xorg doesn't search.
+./docs/llm-session.md:27266:OR install manually: `cp src/.libs/rdcm15_drv.so /usr/lib/xorg/modules/drivers/`.
+./docs/llm-session.md:27282:**Primary cause**: rdcm15_drv.so not in Xorg's ModulePath (/usr/lib/xorg/modules/drivers/) — likely installed to /usr/local/lib/xorg/modules/drivers/ due to default prefix.
+./docs/llm-session.md:27304:1. Rebuild with proper prefix: `./configure --prefix=/usr` (then `make && make install` installs to /usr/lib/xorg/modules/drivers/rdcm15_drv.so). OR set module dir explicitly: `./configure --with-xorg-module-dir=/usr/lib/xorg/modules`.
+./docs/llm-session.md:27305:   - Actually on this AOSC system, `make install` with `--prefix=/usr` → /usr/lib/xorg/modules/drivers/rdcm15_drv.so. Good.
+./docs/llm-session.md:27306:2. Verify: `ls /usr/lib/xorg/modules/drivers/rdcm15_drv.so`.
+./docs/llm-session.md:27329:   Note the PCI line: `BIOS @ 0x????????/131072` — the BIOS address is unknown/unreadable! This means the ROM BAR (0x30) is either not present or not decoded. So `pci_device_read_rom` will likely fail. The driver's file fallback (`/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`) would then be needed. If that file doesn't exist → RDCMapVBIOS returns FALSE → no driver.
+./docs/llm-session.md:27385:2. But Xorg only tried modesetting/fbdev/vesa — rdcm15 was never loaded. Root cause: the module isn't in Xorg's ModulePath (/usr/lib/xorg/modules). With the default autotools prefix (/usr/local), `make install` puts it in /usr/local/lib/xorg/modules/drivers/. Fix: configure with --prefix=/usr (and/or --with-xorg-module-dir=/usr/lib/xorg/modules), then `make install`; and add an xorg.conf.d entry forcing Driver "rdcm15".
+./docs/llm-session.md:27393:Let me also reconsider: should I make VBIOS optional? The driver fundamentally needs the VBIOS (mode tables, PLL). Without it, it can't set modes. So if both read_rom and the file fail, the driver legitimately can't work. That's a hardware/firmware prerequisite (the ROM should be present; if not, the user must provide RDCVBIOS.ROM).
+./docs/llm-session.md:27494:Also the file fallback (ulROMType==2 path) reads the ROM from `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`. If the user provides that file, the driver can work without the PCI ROM.
+./docs/llm-session.md:27536:        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./docs/llm-session.md:27649:251:         fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./docs/llm-session.md:27652:254:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\" not found()==\n");
+./docs/llm-session.md:27726:  "newString": "    if (pRDC->ulROMType == 0)\n    {\n        \n        xfree(pRDC->BIOSVirtualAddr);\n        pRDC->BIOSVirtualAddr = NULL;\n\n        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, \"r\");\n        if (!fpVBIOS)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, \"BIOS ROM file \\\"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\\\" not found()==\\n\");\n        }\n        else\n        {\n            pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);\n            pRDC->ulROMType = 2;\n            for (i = 0; i < BIOS_ROM_SIZE; i++)\n            {\n                fscanf(fpVBIOS, \"%c\", pRDC->BIOSVirtualAddr+i);\n            }\n            fclose (fpVBIOS);\n        }\n    }",
+./docs/llm-session.md:27727:  "oldString": "    if (pRDC->ulROMType == 0)\n    {\n        \n        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, \"r\");\n        if (!fpVBIOS)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, \"BIOS ROM file \\\"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\\\" not found()==\\n\");\n        }\n    \n        \n        pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);\n        if (!pRDC->BIOSVirtualAddr)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, \"Read BIOS ROM file: Mem Allocate Fail!!==\\n\");\n            fclose (fpVBIOS);\n        }\n\n        \n        if (fpVBIOS && pRDC->BIOSVirtualAddr)\n        {\n            pRDC->ulROMType = 2;\n            for (i = 0; i < BIOS_ROM_SIZE; i++)\n            {\n                fscanf(fpVBIOS, \"%c\", pRDC->BIOSVirtualAddr+i);\n            }\n            fclose (fpVBIOS);\n        }\n    }"
+./docs/llm-session.md:27757:Let me also double-check the `BIOS_ROM_PATH_FILE` define — it's `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`. On the user's system, if the PCI ROM is unreadable, they need this file. I should mention it.
+./docs/llm-session.md:27787:1. **Root cause: driver never loaded.** The log shows only modesetting/fbdev/vesa were tried. rdcm15_drv.so is not in Xorg's ModulePath `/usr/lib/xorg/modules` (line 33). With the default autotools prefix (/usr/local), `make install` installs to `/usr/local/lib/xorg/modules/drivers/` — which Xorg doesn't search.
+./docs/llm-session.md:27792:   a. VBIOS: `BIOS @ 0x????????` in the PCI scan means the option ROM is unreadable → `pci_device_read_rom` will fail → needs the `RDCVBIOS.ROM` file at `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`. I've fixed the NULL-deref crash so it degrades gracefully.
+./docs/llm-session.md:27843:sudo cp src/.libs/rdcm15_drv.so /usr/lib/xorg/modules/drivers/
+./docs/llm-session.md:27858:And for VBIOS: since the PCI ROM is unreadable (`BIOS @ 0x????????`), they must place the VBIOS dump at `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`. How to get the VBIOS? On a working system, dump the ROM, or extract from the motherboard BIOS / vendor. The file name is defined in rdc.h presumably as BIOS_ROM_PATH_FILE. Let me check the define.
+./docs/llm-session.md:27867:  "command": "grep -rn \"BIOS_ROM_PATH_FILE\\|BIOS_ROM_SIZE\\|BIOS_ROM_PHY_BASE\" src/rdc.h src/rdc_tool.c | head; echo \"---configure module dir default---\"; grep -n \"xorg-module-dir\\|moduledir\" configure.ac",
+./docs/llm-session.md:27874:src/rdc.h:269:#define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//RDCVBIOS.ROM"
+./docs/llm-session.md:27879:src/rdc_tool.c:254:        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./docs/llm-session.md:27899:- VBIOS file path: `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM` (BIOS_ROM_PATH_FILE).
+./docs/llm-session.md:27915:With `--prefix=/usr`, `make install` installs rdcm15_drv.so to /usr/lib/xorg/modules/drivers/. Good.
+./docs/llm-session.md:27917:Then verify: `ls /usr/lib/xorg/modules/drivers/rdcm15_drv.so`.
+./docs/llm-session.md:27929:And the VBIOS file: since `BIOS @ 0x????????` (ROM BAR unreadable on this board), `pci_device_read_rom` will fail → put the VBIOS dump at `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`. The VBIOS can be dumped from the motherboard BIOS image or a working system (e.g., via `dd if=/dev/mem` from 0xC0000, or from the vendor's BIOS update).
+./docs/llm-session.md:27947:Log 显示只尝试了 modesetting / fbdev / vesa，完全没有 rdcm15。原因：默认 prefix 是 /usr/local，`make install` 把驱动装到了 /usr/local/lib/xorg/modules/drivers/，而 Xorg 的 ModulePath 是 /usr/lib/xorg/modules（日志第 33 行）。
+./docs/llm-session.md:27952:PCI 扫描显示 `BIOS @ 0x????????` —— 这块主板的 option ROM BAR 不可读（vesa 读 0xC0000 也是 I/O error）。所以 `pci_device_read_rom` 会失败。我已修复此路径的空指针崩溃，现在会优雅回退到文件。你需要把 VBIOS 放到 `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`（32KB dump）。
+./docs/llm-session.md:28027:- 但本项目默认 `prefix=/usr/local`，`make install` 会把 `rdcm15_drv.so` 装到 **`/usr/local/lib/xorg/modules/drivers/`** —— Xorg 根本不会去那里找，所以日志里连 `LoadModule: "rdcm15"` 都没有。
+./docs/llm-session.md:28044:sudo make install                  # 会装到 /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:28045:ls /usr/lib/xorg/modules/drivers/rdcm15_drv.so   # 确认存在
+./docs/llm-session.md:28059:`/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`
+./docs/llm-session.md:28162:So the ROM is a valid 32KB M2012 VBIOS from 2011 ("02 25 17:32:00 2011"). This is exactly what the driver needs at `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`.
+./docs/llm-session.md:28251:Let me also mention: if they want the RDCVBIOS.ROM to be used, put it at /usr/lib/xorg/modules/drivers/RDCVBIOS.ROM.
+./docs/llm-session.md:28262:直接放到目标机 `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM` 即可作为 PCI ROM 不可读时的回退。
+./docs/llm-session.md:28303:1. Copy `misc/RDCVBIOS.ROM` → `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`
+./docs/llm-session.md:28316:sudo make install                # → /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:28321:sudo cp misc/RDCVBIOS.ROM /usr/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:28350:1. Install the VBIOS ROM to `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM` during `make install`.
+./docs/llm-session.md:28377:2. Copy VBIOS ROM → /usr/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:28472:Let me also reconsider the install of the ROM: the driver's BIOS_ROM_PATH_FILE is hardcoded to `//usr//lib//xorg//modules//drivers//RDCVBIOS.ROM` (double slashes, from rdc.h). So the ROM must go to `/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM`. `$(moduledir)/drivers/RDCVBIOS.ROM` with moduledir=/usr/lib/xorg/modules → correct path. Good. But if the user configures a different module dir, the driver's hardcoded path wouldn't match — that's a pre-existing limitation. For this deployment (default /usr/lib), it's fine.
+./docs/llm-session.md:28493:Let me also make sure that when the user runs `make install` WITHOUT running configure with --prefix=/usr... hmm, the moduledir comes from configure. If they configure with default prefix /usr/local, the ROM would go to /usr/local/lib/xorg/modules/drivers/ but the driver's hardcoded path is /usr/lib/... → mismatch. I've told them to use --prefix=/usr. The install will follow the configured prefix. That's correct behavior.
+./docs/llm-session.md:28548:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:28549:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:28578: /usr/bin/mkdir -p '/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers'
+./docs/llm-session.md:28579: /bin/sh ../libtool   --mode=install /usr/bin/install -c   rdcm15_drv.la '/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers'
+./docs/llm-session.md:28580:libtool: install: /usr/bin/install -c .libs/rdcm15_drv.so /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:28581:libtool: install: /usr/bin/install -c .libs/rdcm15_drv.lai /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la
+./docs/llm-session.md:28582:libtool: warning: remember to run 'libtool --finish /usr/local/lib/xorg/modules/drivers'
+./docs/llm-session.md:28588:/usr/bin/mkdir -p /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers
+./docs/llm-session.md:28589:/usr/bin/install -c -m 644 ./misc/RDCVBIOS.ROM /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:28598:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:28599:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la
+./docs/llm-session.md:28600:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:28759:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la
+./docs/llm-session.md:28760:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:28761:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:28773:- `/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so`
+./docs/llm-session.md:28774:- `/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la`
+./docs/llm-session.md:28775:- `/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM`
+./docs/llm-session.md:28777:Note this test used the default prefix (/usr/local) since I ran configure without --prefix=/usr in this test env. On the target with `--prefix=/usr`, paths become `/etc/X11/xorg.conf` and `/usr/lib/xorg/modules/drivers/...`.
+./docs/llm-session.md:28831: /bin/sh ../libtool   --mode=uninstall rm -f '/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la'
+./docs/llm-session.md:28832:libtool: uninstall: rm -f /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:28833:rm -f /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:29161:One more thing — DESTDIR and the `@moduledir@`: in the top-level Makefile.am I used `$(moduledir)`. Since configure.ac AC_SUBSTs moduledir, it's available in the top Makefile. Verified — the staging test worked (installed to /usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM). Good.
+./docs/llm-session.md:29602:        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./docs/llm-session.md:29660:            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\" not found()==\n");
+./docs/llm-session.md:30379:Actually — let me reconsider a COMPLETELY different crash candidate. What about `RDCMapVBIOS` returning TRUE but the file-based ROM path... wait, the log says "Read VBIOS from PCI ROM FAILED" then "return TRUE". For the file path to succeed, fopen(BIOS_ROM_PATH_FILE) must have worked (the ROM file was installed). And the AA55/vendor check passed. So BIOSVirtualAddr points to the 32KB buffer. Good.
+./docs/llm-session.md:33378:259:            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/RDCVBIOS.ROM\" not found()==\n");
+./docs/llm-session.md:36332:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la
+./docs/llm-session.md:36333:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:36334:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:36346:- `/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so`
+./docs/llm-session.md:36347:- `/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM`
+./docs/llm-session.md:36368:rm -f /tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:36653:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.la
+./docs/llm-session.md:36654:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:36655:/tmp/rdc-stage/usr/local/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:36826:52: [    36.826] (II) Loading /usr/lib/xorg/modules/drivers/modesetting_drv.so
+./docs/llm-session.md:36832:58: [    36.831] (II) Loading /usr/lib/xorg/modules/drivers/fbdev_drv.so
+./docs/llm-session.md:36838:64: [    36.834] (II) Loading /usr/lib/xorg/modules/drivers/vesa_drv.so
+./docs/llm-session.md:36960:Hmm — but ALSO: even WITHOUT the snippet, would rdcm15 be auto-detected? Earlier (turn with the working log), the driver was loaded via the CONFIG FILE (/usr/etc/X11/xorg.conf with Driver "rdcm15"). Without a config, auto-config tries modesetting/fbdev/vesa only (it doesn't know about rdcm15 unless the module is probed). Actually — auto-config DOES probe all driver modules in the modules dir. If rdcm15_drv.so is in /usr/lib/xorg/modules/drivers/, Xorg would probe it and match (the device table). But the log shows only modesetting/fbdev/vesa matched — so rdcm15_drv.so is NOT in the modules dir?? 
+./docs/llm-session.md:36962:Wait — the user said earlier "顺利安装驱动后" (successfully installed driver). And the working log showed the driver loading. So rdcm15_drv.so WAS in /usr/lib/xorg/modules/drivers/. But now... maybe a reinstall removed it? Or maybe the user's latest reinstall (after my config fix) put things somewhere wrong?
+./docs/llm-session.md:36964:Hmm, actually — let me reconsider. In the working log, rdcm15 was loaded because the CONFIG file specified `Driver "rdcm15"` which forced Xorg to load it. In THIS log, there's no config specifying rdcm15, so auto-config only tries modesetting/fbdev/vesa (which are the auto-detected drivers). rdcm15 is NOT in the auto-config match list — because... wait, why not? Xorg auto-config probes ALL drivers in /usr/lib/xorg/modules/drivers/. If rdcm15_drv.so is there, it would be probed and, matching 17f3:2012, be added to the candidates. But the log shows only 3 matched.
+./docs/llm-session.md:36967:1. rdcm15_drv.so is NOT in /usr/lib/xorg/modules/drivers/ anymore (removed by a make uninstall or overwritten?).
+./docs/llm-session.md:36972:So the fact that rdcm15 isn't matched means rdcm15_drv.so is NOT in /usr/lib/xorg/modules/drivers/ on the target RIGHT NOW.
+./docs/llm-session.md:36988:- rdcm15_drv.so in /usr/lib/xorg/modules/drivers/ (not present)
+./docs/llm-session.md:36994:Wait — let me reconsider the module dir. The module installs to `@moduledir@/drivers` where moduledir = `$libdir/xorg/modules`. With `--prefix=/usr`, libdir=/usr/lib → /usr/lib/xorg/modules/drivers. But if the user configured WITHOUT --prefix=/usr, moduledir=/usr/local/lib/xorg/modules → /usr/local/lib/xorg/modules/drivers. And Xorg's ModulePath is /usr/lib/xorg/modules. So the driver would be at /usr/local/lib/... and not found!
+./docs/llm-session.md:36996:But the user's EARLIER working log DID load rdcm15 from /usr/lib/xorg/modules/drivers/rdcm15_drv.so. So they had it installed correctly at some point. 
+./docs/llm-session.md:37002:But ALSO rdcm15_drv.so should still be in /usr/lib/xorg/modules/drivers/ from the previous install, and auto-config should probe it... unless auto-config doesn't probe ALL modules. 
+./docs/llm-session.md:37006:So the absence of rdcm15 in the match list strongly implies rdcm15_drv.so is NOT in /usr/lib/xorg/modules/drivers/.
+./docs/llm-session.md:37024:- Module → /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:37025:- ROM → /usr/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:37034:   - `ls -la /usr/lib/xorg/modules/drivers/rdcm15_drv.so /usr/lib/xorg/modules/drivers/RDCVBIOS.ROM /etc/X11/xorg.conf.d/00-rdc.conf`
+./docs/llm-session.md:37036:3. If the module is present but not probed → maybe a stale module. Check `ls /usr/local/lib/xorg/modules/drivers/` too.
+./docs/llm-session.md:37051:So rdcm15_drv.so is definitively NOT in /usr/lib/xorg/modules/drivers/ on the target.
+./docs/llm-session.md:37067:Hmm, let me reconsider one more angle: the user might have re-installed, but `make install` on the target re-ran autogen which regenerated the Makefile — and the module DID install to /usr/lib/xorg/modules/drivers/. But then why isn't it probed? 
+./docs/llm-session.md:37085:1. Log analysis: rdcm15 NOT loaded at all — no "LoadModule: rdcm15", not in "Matched" list, no Screen section (config snippet not read). Conclusion: on the target, NEITHER /usr/lib/xorg/modules/drivers/rdcm15_drv.so NOR /etc/X11/xorg.conf.d/00-rdc.conf is present → the post-fix `make install` didn't actually run or went to the wrong prefix.
+./docs/llm-session.md:37090:Let me also make sure I give them a way to check WHERE things got installed if prefix was wrong (e.g., /usr/local/lib/xorg/modules/drivers/).
+./docs/llm-session.md:37126:如果模块真的在 `/usr/lib/xorg/modules/drivers/`，即使没有配置文件，auto-config 也会探测到 17f3:2012 并把它加入 Matched 列表 —— 日志里没有，所以模块确实不在那里。
+./docs/llm-session.md:37132:ls -la /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:37133:ls -la /usr/lib/xorg/modules/drivers/RDCVBIOS.ROM
+./docs/llm-session.md:37137:ls -la /usr/local/lib/xorg/modules/drivers/ 2>/dev/null
+./docs/llm-session.md:37153:ls -la /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:37162:如果 `ls` 显示模块在 `/usr/local/lib/xorg/modules/drivers/`，说明上一步 `--prefix=/usr` 没生效，需要先 `make distclean` 再重新 `./configure --prefix=/usr`。如果两个文件都在但 Xorg 仍不加载，把新的 `ls` 输出和日志发我。
+./docs/llm-session.md:37237:46: [    32.625] (II) Loading /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:39550:46: [    89.620] (II) Loading /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:40393:[   771.187] (EE) 5: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb741b000+0x98fa) [0xb74248fa]
+./docs/llm-session.md:40864:[   771.187] (EE) 5: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb741b000+0x98fa) [0xb74248fa]
+./docs/llm-session.md:44014:[   173.070] (EE) 5: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb73b7000+0x9917) [0xb73c0917]
+./docs/llm-session.md:45611:[   711.124] (EE) 3: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb739e000+0x19478) [0xb73b7478]
+./docs/llm-session.md:45612:[   711.124] (EE) 4: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb739e000+0x19a66) [0xb73b7a66]
+./docs/llm-session.md:45613:[   711.124] (EE) 5: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb739e000+0x19f26) [0xb73b7f26]
+./docs/llm-session.md:45614:[   711.124] (EE) 6: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb739e000+0x1eb27) [0xb73bcb27]
+./docs/llm-session.md:45615:[   711.124] (EE) 7: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb739e000+0xc3fe) [0xb73aa3fe]
+./docs/llm-session.md:45616:[   711.124] (EE) 8: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb739e000+0x8a1f) [0xb73a6a1f]
+./docs/llm-session.md:45617:[   711.124] (EE) 9: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb739e000+0x9cae) [0xb73a7cae]
+./docs/llm-session.md:47979:[  1297.938] (EE) 4: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb73fe000+0x1ed2a) [0xb741cd2a]
+./docs/llm-session.md:47980:[  1297.938] (EE) 5: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb73fe000+0xc47e) [0xb740a47e]
+./docs/llm-session.md:47981:[  1297.938] (EE) 6: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb73fe000+0x8a1f) [0xb7406a1f]
+./docs/llm-session.md:47982:[  1297.938] (EE) 7: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb73fe000+0x9d4c) [0xb7407d4c]
+./docs/llm-session.md:49813:[   102.806] (EE) 4: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0x1ed2a) [0xb7373d2a]
+./docs/llm-session.md:49814:[   102.806] (EE) 5: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0xc47e) [0xb736147e]
+./docs/llm-session.md:49815:[   102.807] (EE) 6: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0x8a1f) [0xb735da1f]
+./docs/llm-session.md:49816:[   102.807] (EE) 7: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0x9d4c) [0xb735ed4c]
+./docs/llm-session.md:50306:366:[   102.806] (EE) 4: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0x1ed2a) [0xb7373d2a]
+./docs/llm-session.md:50307:367:[   102.806] (EE) 5: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0xc47e) [0xb736147e]
+./docs/llm-session.md:50308:368:[   102.807] (EE) 6: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0x8a1f) [0xb735da1f]
+./docs/llm-session.md:50309:369:[   102.807] (EE) 7: /usr/lib/xorg/modules/drivers/rdcm15_drv.so (0xb7355000+0x9d4c) [0xb735ed4c]
+./docs/llm-session.md:52443:  "command": "grep -n \"InPort\\|OutPort\\|RDC_IOBase\\|vSetRDCIOBase\\|pRelated_IOAddress\\|MMIOVirtualAddr + \\|pci_device_read_rom\\|RDCVBIOS\\|BIOS_ROM_PATH\" xf86-video-rdc-ardje/src/rdc_vgatool.c xf86-video-rdc-ardje/src/rdc_tool.c 2>/dev/null | head -15",
+./docs/llm-session.md:52450:xf86-video-rdc-ardje/src/rdc_tool.c:205:        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./docs/llm-session.md:52462:- Has the file-based VBIOS fallback (BIOS_ROM_PATH_FILE) — same as the original.
+./docs/llm-session.md:56972:7: `M2012-0.0.4.rom`: VBIOS for M2012 GPU (dump from `EBOX-3310MX`, BIOS Date: 08/16/2011, SoC is Vortex86MX+)
+./docs/llm-session.md:56974:9: `M2012-0.0.8.rom`: VBIOS for M2012 GPU (dump from `EBOX-3350DX2`, BIOS Date: 02/10/2017, SoC is Vortex86DX2)
+./docs/llm-session.md:58911:/usr/lib/xorg/modules/drivers/:
+./docs/llm-session.md:60205:269: #define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom"
+./docs/llm-session.md:62689:Hmm wait, actually there's an even better idea for the no-EDID case. The VBIOS ROM contains a default mode table (`VESATable` with Mode_ID and H/V sizes). The BIOS's own boot resolution is often set in firmware. The default boot resolution (what shows at POST) could be read... too complex.
+./docs/llm-session.md:63961:Let me check if the project is configured and builds on this dev machine. Let me try `make` (existing config?) — but this machine is x86_64 with xorg headers. The driver references `BIOS_ROM_PATH_FILE` etc. Let me check if there's a Makefile already.
+./docs/llm-session.md:64104:/bin/sh ../libtool  --tag=CC   --mode=link gcc -I/usr/include/xorg -fvisibility=hidden -I/usr/include/pixman-1 -std=gnu99 -D_DEFAULT_SOURCE -g -O2 -module -avoid-version   -o rdcm15_drv.la -rpath /usr/local/lib/xorg/modules/drivers rdc_2dtool.lo rdc_accel.lo rdc_cursor.lo rdc_driver.lo rdc_mode.lo rdc_tool.lo rdc_vgatool.lo rdc_video.lo vidinit.lo rdc_extension.lo gamma.lo CInt10.lo HDMI.lo TV.lo rdcdual_driver.lo rdcdual_display.lo  
+./docs/llm-session.md:64293:Does the REAL VGA BIOS implement DDC? The real BIOS ROM (M2012-0.0.8.rom) is a real RDC VGA BIOS — it might implement function 4F15 (DDC). But executing it requires the real int10 machinery (vm86/x86emu) to work. On the target, per AGENTS.md, the real int10 may not be functional (no iopl; option ROM unreadable → but the driver loads the ROM from file). Hmm, actually `xf86InitInt10` reads the BIOS from the option ROM address 0xC0000 via /dev/mem or PCI config. Since the option ROM is unreadable on this board, real int10 init fails → pVbe == NULL → vbeDoEDID never runs. So the REAL BIOS DDC path is dead.
+./docs/llm-session.md:66137:/bin/sh ../libtool  --tag=CC   --mode=link gcc -I/usr/include/xorg -fvisibility=hidden -I/usr/include/pixman-1 -std=gnu99 -D_DEFAULT_SOURCE -g -O2 -module -avoid-version   -o rdcm15_drv.la -rpath /usr/local/lib/xorg/modules/drivers rdc_2dtool.lo rdc_accel.lo rdc_cursor.lo rdc_driver.lo rdc_mode.lo rdc_tool.lo rdc_vgatool.lo rdc_video.lo vidinit.lo rdc_extension.lo gamma.lo CInt10.lo HDMI.lo TV.lo rdcdual_driver.lo rdcdual_display.lo  
+./docs/llm-session.md:66169:/bin/sh ../libtool  --tag=CC   --mode=link gcc -I/usr/include/xorg -fvisibility=hidden -I/usr/include/pixman-1 -std=gnu99 -D_DEFAULT_SOURCE -g -O2 -module -avoid-version   -o rdcm15_drv.la -rpath /usr/local/lib/xorg/modules/drivers rdc_2dtool.lo rdc_accel.lo rdc_cursor.lo rdc_driver.lo rdc_mode.lo rdc_tool.lo rdc_vgatool.lo rdc_video.lo vidinit.lo rdc_extension.lo gamma.lo CInt10.lo HDMI.lo TV.lo rdcdual_driver.lo rdcdual_display.lo  
+./docs/llm-session.md:69579:72: | `misc/M2012-0.0.4.rom` | VBIOS dump for the file fallback (Version 0.0.4) |
+./docs/llm-session.md:69580:73: | `misc/M2012-0.0.8.rom` | VBIOS dump for the file fallback (Version 0.0.8) and default |
+./docs/llm-session.md:70302:46: [  2432.787] (II) Loading /usr/lib/xorg/modules/drivers/rdcm15_drv.so
+./docs/llm-session.md:70942:Actually — hmm. There's a real possibility this is exactly the "1280x1024" monitor whose EDID field = 1280. If the monitor expects 1280 active pixels and its EDID field is 1280, then the field ISN'T stored as (active-1); the monitor's firmware is loose. In practice, both interpretations give the same visible result because the total is what matters, but the "native" resolution matching should use 1280x1024 (the mode name the pool has).
+./Makefile.am:24:EXTRA_DIST = misc/M2012-0.0.8.rom misc/00-rdc.conf
+./Makefile.am:32:	$(INSTALL_DATA) $(srcdir)/misc/M2012-0.0.8.rom $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
+./Makefile.am:42:	rm -f $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
+./xf86-video-rdc-ardje/src/rdc_tool.c:205:        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./xf86-video-rdc-ardje/src/rdc.h:179:#define BIOS_ROM_PATH_FILE      "//root//RDCVBIOS.ROM"
+./src/rdc_tool.c:256:        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+./src/rdc_tool.c:259:            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/M2012-0.0.8.rom\" not found()==\n");
+./src/rdc.h:271:#define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom"
+./AGENTS.md:39:2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to `RDCVBIOS.ROM` (path constant `BIOS_ROM_PATH_FILE`). Handle `BIOSVirtualAddr == NULL` gracefully.
+./AGENTS.md:73:| `misc/M2012-0.0.4.rom` | VBIOS dump for the file fallback (Version 0.0.4) |
+./AGENTS.md:74:| `misc/M2012-0.0.8.rom` | VBIOS dump for the file fallback (Version 0.0.8) and default |
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 11.7s)
+
+_Thinking:_
+
+Now I have the complete picture. Let me plan the implementation:
+
+### Files to change:
+
+1. **`Makefile.am`**: Install both `M2012-0.0.4.rom` and `M2012-0.0.8.rom` to `/usr/lib/firmware-rdc/` (create dir). Update `EXTRA_DIST` to include both roms. Update uninstall.
+
+2. **`src/rdc.h`**: 
+   - Replace `BIOS_ROM_PATH_FILE` with `BIOS_ROM_PATH_DIR` + `BIOS_ROM_DEFAULT_FILE`.
+   - Add `OPTION_VBIOS` to enum + RDCOptions.
+
+3. **`src/rdc_tool.c`**: In `RDCMapVBIOS`, build the path from dir + configured filename (default `M2012-0.0.8.rom`), allow absolute path override, update error message.
+
+4. **`misc/00-rdc.conf`**: Add commented `Option "VBIOS"` in Device section. Also update the comment about the firmware dir.
+
+5. **`misc/README.md`**: Update the ROM install location documentation.
+
+6. **`AGENTS.md`**: Update the hardware-constraints note #2 and architecture table.
+
+Let me now also double check the option name. The user wants "Vendor" section... I'll name the option clearly. Given the user mentioned "Vendor", maybe name the option "VBIOS" or "VBIOSFile"? Let me use `Option "VBIOS"` — simple and clear. Actually, maybe better `Option "VBIOS" "M2012-0.0.4.rom"`. Yes.
+
+Wait — should I also reconsider: the user said "让驱动从这个目录读取vbios" (make the driver read VBIOS from this directory). So `/usr/lib/firmware-rdc` is the fixed dir; the option picks the file within it (or an absolute path).
+
+Now — one concern about `RDCMapVBIOS` in `RDCScreenInit` re-init path (line 1399): it calls `RDCMapVBIOS(pScrn)` after re-mapping. Options still valid. Good.
+
+Also — `pRDC->Options` could theoretically be NULL if RDCMapVBIOS is called before options are set? In PreInit, options set at 723, RDCMapVBIOS at 920. In ScreenInit re-init, options persist. In rdcdual_driver.c line 741 — dual path, dead. So safe. But to be defensive, guard `if (pRDC->Options)` before xf86GetOptValString.
+
+Let me now also reconsider whether to use `snprintf` — need `<stdio.h>` (already included in rdc_tool.c). Good. And the option string pointer.
+
+Let me write the code.
+
+First, rdc.h changes.
+
+Now I'll implement. The `Vendor` section data is explicitly unused by Xorg (per xorg.conf(5)), so the VBIOS selection becomes a Device-section `Option`. Let me start with `Makefile.am`:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/Makefile.am",
+  "newString": "AUTOMAKE_OPTIONS = foreign\nSUBDIRS = src\n\nEXTRA_DIST = misc/M2012-0.0.4.rom misc/M2012-0.0.8.rom misc/00-rdc.conf\n\n# Xorg reads user config snippets from /etc/X11/xorg.conf.d regardless of the\n# build's sysconfdir (e.g. AOSC uses /usr/etc but Xorg still reads /etc).\nXORG_CONFIG_DIR = /etc/X11/xorg.conf.d\n\n# The driver reads its VBIOS firmware from this fixed directory (see\n# BIOS_ROM_PATH_DIR in rdc.h); Option \"VBIOS\" selects which file to use.\nFIRMWARE_DIR = /usr/lib/firmware-rdc\nRDC_VBIOS_FILES = M2012-0.0.4.rom M2012-0.0.8.rom\n\ninstall-data-local:\n\t$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers\n\t$(MKDIR_P) $(DESTDIR)$(FIRMWARE_DIR)\n\tfor f in $(RDC_VBIOS_FILES); do \\\n\t\t$(INSTALL_DATA) $(srcdir)/misc/$$f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \\\n\tdone\n\t@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \\\n\t\techo \"  Installing xorg.conf.d/00-rdc.conf to $(XORG_CONFIG_DIR)\"; \\\n\t\t$(MKDIR_P) $(DESTDIR)$(XORG_CONFIG_DIR); \\\n\t\t$(INSTALL_DATA) $(srcdir)/misc/00-rdc.conf $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; \\\n\telse \\\n\t\techo \"  $(XORG_CONFIG_DIR)/00-rdc.conf already exists, not overwriting\"; \\\n\tfi\n\nuninstall-local:\n\tfor f in $(RDC_VBIOS_FILES); do \\\n\t\trm -f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \\\n\tdone\n\trmdir $(DESTDIR)$(FIRMWARE_DIR) 2>/dev/null || true\n\trm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf",
+  "oldString": "AUTOMAKE_OPTIONS = foreign\nSUBDIRS = src\n\nEXTRA_DIST = misc/M2012-0.0.8.rom misc/00-rdc.conf\n\n# Xorg reads user config snippets from /etc/X11/xorg.conf.d regardless of the\n# build's sysconfdir (e.g. AOSC uses /usr/etc but Xorg still reads /etc).\nXORG_CONFIG_DIR = /etc/X11/xorg.conf.d\n\ninstall-data-local:\n\t$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers\n\t$(INSTALL_DATA) $(srcdir)/misc/M2012-0.0.8.rom $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom\n\t@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \\\n\t\techo \"  Installing xorg.conf.d/00-rdc.conf to $(XORG_CONFIG_DIR)\"; \\\n\t\t$(MKDIR_P) $(DESTDIR)$(XORG_CONFIG_DIR); \\\n\t\t$(INSTALL_DATA) $(srcdir)/misc/00-rdc.conf $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; \\\n\telse \\\n\t\techo \"  $(XORG_CONFIG_DIR)/00-rdc.conf already exists, not overwriting\"; \\\n\tfi\n\nuninstall-local:\n\trm -f $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom\n\trm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 4.7s)
+
+_Thinking:_
+
+Wait — the `rmdir $(DESTDIR)$(FIRMWARE_DIR) 2>/dev/null || true` — if DESTDIR is empty, rmdir /usr/lib/firmware-rdc. If the dir has other files, rmdir fails and we ignore. Good.
+
+But note: `$(moduledir)/drivers` creation in install-data-local is now redundant since the driver module itself installs via libtool to $(moduledir)/drivers... Actually the `$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers` was there to ensure the dir exists for the ROM install. Now the ROM goes to FIRMWARE_DIR instead. Should I keep the moduledir/drivers MKDIR_P? libtool's install creates it automatically. Let me remove it to keep clean. Actually, harmless to keep, but let me remove it since it's no longer needed.
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/Makefile.am",
+  "newString": "install-data-local:\n\t$(MKDIR_P) $(DESTDIR)$(FIRMWARE_DIR)\n\tfor f in $(RDC_VBIOS_FILES); do \\\n\t\t$(INSTALL_DATA) $(srcdir)/misc/$$f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \\\n\tdone",
+  "oldString": "install-data-local:\n\t$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers\n\t$(MKDIR_P) $(DESTDIR)$(FIRMWARE_DIR)\n\tfor f in $(RDC_VBIOS_FILES); do \\\n\t\t$(INSTALL_DATA) $(srcdir)/misc/$$f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \\\n\tdone"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 7.1s)
+
+Now update `src/rdc.h` — add the option and replace the hardcoded ROM path:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc.h",
+  "newString": "typedef enum {\n    OPTION_NOACCEL,\n    OPTION_MMIO2D,   \n    OPTION_SW_CURSOR,\n    OPTION_HWC_NUM,\n    OPTION_ENG_CAPS,   \n    OPTION_DBG_SELECT,\n    OPTION_NO_DDC,\n    OPTION_ACCELMETHOD,\n    OPTION_HRATIO,\n    OPTION_VRATIO,\n    OPTION_RANDRROTATION,    \n    OPTION_DOWN_SCALE,\n    OPTION_DEFAULT_MODE,\n    OPTION_VBIOS\n} RDCOpts;\n\nstatic const OptionInfoRec RDCOptions[] = {\n    {OPTION_NOACCEL,       \"NoAccel\",       OPTV_BOOLEAN,  {0}, TRUE},\n    {OPTION_MMIO2D,        \"MMIO2D\",        OPTV_BOOLEAN,  {0}, FALSE},   \n    {OPTION_SW_CURSOR,     \"SWCursor\",      OPTV_BOOLEAN,  {0}, TRUE},    \n    {OPTION_HWC_NUM,       \"HWCNumber\",     OPTV_INTEGER,  {0}, FALSE},\n    {OPTION_ENG_CAPS,      \"ENGCaps\",       OPTV_INTEGER,  {0}, FALSE},                    \n    {OPTION_NO_DDC,        \"NoDDC\",         OPTV_BOOLEAN,  {0}, FALSE},\n    {OPTION_ACCELMETHOD,   \"AccelMethod\",   OPTV_STRING,   {0}, FALSE},\n    {OPTION_HRATIO,         \"HRatio\",         OPTV_INTEGER,    {0},    FALSE},\n    {OPTION_VRATIO,         \"VRatio\",         OPTV_INTEGER,    {0},    FALSE},    \n    {OPTION_RANDRROTATION, \"RandRRotation\", OPTV_BOOLEAN,  {0}, FALSE},\n    {OPTION_DOWN_SCALE,    \"DownScale\",     OPTV_BOOLEAN,  {0}, FALSE},\n    {OPTION_DEFAULT_MODE,  \"DefaultMode\",   OPTV_STRING,   {0}, FALSE},\n    {OPTION_VBIOS,         \"VBIOS\",         OPTV_STRING,   {0}, FALSE},\n    {-1,                   NULL,            OPTV_NONE,     {0}, FALSE}\n};",
+  "oldString": "typedef enum {\n    OPTION_NOACCEL,\n    OPTION_MMIO2D,   \n    OPTION_SW_CURSOR,\n    OPTION_HWC_NUM,\n    OPTION_ENG_CAPS,   \n    OPTION_DBG_SELECT,\n    OPTION_NO_DDC,\n    OPTION_ACCELMETHOD,\n    OPTION_HRATIO,\n    OPTION_VRATIO,\n    OPTION_RANDRROTATION,    \n    OPTION_DOWN_SCALE,\n    OPTION_DEFAULT_MODE\n} RDCOpts;\n\nstatic const OptionInfoRec RDCOptions[] = {\n    {OPTION_NOACCEL,       \"NoAccel\",       OPTV_BOOLEAN,  {0}, TRUE},\n    {OPTION_MMIO2D,        \"MMIO2D\",        OPTV_BOOLEAN,  {0}, FALSE},   \n    {OPTION_SW_CURSOR,     \"SWCursor\",      OPTV_BOOLEAN,  {0}, TRUE},    \n    {OPTION_HWC_NUM,       \"HWCNumber\",     OPTV_INTEGER,  {0}, FALSE},\n    {OPTION_ENG_CAPS,      \"ENGCaps\",       OPTV_INTEGER,  {0}, FALSE},                    \n    {OPTION_NO_DDC,        \"NoDDC\",         OPTV_BOOLEAN,  {0}, FALSE},\n    {OPTION_ACCELMETHOD,   \"AccelMethod\",   OPTV_STRING,   {0}, FALSE},\n    {OPTION_HRATIO,         \"HRatio\",         OPTV_INTEGER,    {0},    FALSE},\n    {OPTION_VRATIO,         \"VRatio\",         OPTV_INTEGER,    {0},    FALSE},    \n    {OPTION_RANDRROTATION, \"RandRRotation\", OPTV_BOOLEAN,  {0}, FALSE},\n    {OPTION_DOWN_SCALE,    \"DownScale\",     OPTV_BOOLEAN,  {0}, FALSE},\n    {OPTION_DEFAULT_MODE,  \"DefaultMode\",   OPTV_STRING,   {0}, FALSE},\n    {-1,                   NULL,            OPTV_NONE,     {0}, FALSE}\n};"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.9s)
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc.h",
+  "newString": "#define BIOS_ROM_PATH_DIR       \"/usr/lib/firmware-rdc\"\n#define BIOS_ROM_DEFAULT_FILE   \"M2012-0.0.8.rom\"\n#define BIOS_ROM_SIZE           32*1024\n#define BIOS_ROM_PHY_BASE       0xC0000",
+  "oldString": "#define BIOS_ROM_PATH_FILE      \"//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom\"\n#define BIOS_ROM_SIZE           32*1024\n#define BIOS_ROM_PHY_BASE       0xC0000"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 5.7s)
+
+Now update `RDCMapVBIOS` in `rdc_tool.c` to build the path from the configured option:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc_tool.c",
+  "newString": "    if (pRDC->ulROMType == 0)\n    {\n        char BIOSPath[512];\n        const char *VBIOSFile = NULL;\n\n        \n        xfree(pRDC->BIOSVirtualAddr);\n        pRDC->BIOSVirtualAddr = NULL;\n\n        /* Pick the VBIOS firmware file.  Option \"VBIOS\" selects a file inside\n         * /usr/lib/firmware-rdc, or an absolute path; otherwise the default\n         * firmware dump is used. */\n        if (pRDC->Options)\n            VBIOSFile = xf86GetOptValString(pRDC->Options, OPTION_VBIOS);\n        if (!VBIOSFile || !*VBIOSFile)\n            VBIOSFile = BIOS_ROM_DEFAULT_FILE;\n        if (VBIOSFile[0] == '/')\n            snprintf(BIOSPath, sizeof(BIOSPath), \"%s\", VBIOSFile);\n        else\n            snprintf(BIOSPath, sizeof(BIOSPath), \"%s/%s\", BIOS_ROM_PATH_DIR, VBIOSFile);\n\n        fpVBIOS = fopen(BIOSPath, \"r\");\n        if (!fpVBIOS)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel,\n                           \"BIOS ROM file \\\"%s\\\" not found()==\\n\", BIOSPath);\n        }\n        else\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel,\n                           \"Reading VBIOS from \\\"%s\\\"\\n\", BIOSPath);\n            pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);\n            pRDC->ulROMType = 2;\n            for (i = 0; i < BIOS_ROM_SIZE; i++)\n            {\n                fscanf(fpVBIOS, \"%c\", pRDC->BIOSVirtualAddr+i);\n            }\n            fclose (fpVBIOS);\n        }\n    }",
+  "oldString": "    if (pRDC->ulROMType == 0)\n    {\n        \n        xfree(pRDC->BIOSVirtualAddr);\n        pRDC->BIOSVirtualAddr = NULL;\n\n        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, \"r\");\n        if (!fpVBIOS)\n        {\n            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, \"BIOS ROM file \\\"/usr/lib/xorg/modules/drivers/M2012-0.0.8.rom\\\" not found()==\\n\");\n        }\n        else\n        {\n            pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);\n            pRDC->ulROMType = 2;\n            for (i = 0; i < BIOS_ROM_SIZE; i++)\n            {\n                fscanf(fpVBIOS, \"%c\", pRDC->BIOSVirtualAddr+i);\n            }\n            fclose (fpVBIOS);\n        }\n    }"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 4.2s)
+
+_Thinking:_
+
+Now update misc/00-rdc.conf with the VBIOS option hint and the firmware dir comment. Also update the AGENTS.md and misc/README.md.
+
+Now update `misc/00-rdc.conf`:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/misc/00-rdc.conf",
+  "newString": "Section \"Device\"\n\tIdentifier  \"Card0\"\n\tDriver      \"rdcm15\"\n\tBusID       \"PCI:0:13:0\"\n\t# The driver starts at the monitor's EDID native resolution when DDC\n\t# works, otherwise at a safe default (largest <= 1024x768).  Pin the\n\t# initial resolution explicitly with:\n\t# Option \"DefaultMode\" \"1366x768\"\n\t#\n\t# VBIOS firmware: the driver reads the ROM from /usr/lib/firmware-rdc\n\t# (fallback when the PCI option ROM is unreadable).  Select a specific\n\t# firmware file, or give an absolute path:\n\t# Option \"VBIOS\" \"M2012-0.0.8.rom\"\n\t# Option \"VBIOS\" \"/usr/lib/firmware-rdc/M2012-0.0.4.rom\"\nEndSection",
+  "oldString": "Section \"Device\"\n\tIdentifier  \"Card0\"\n\tDriver      \"rdcm15\"\n\tBusID       \"PCI:0:13:0\"\n\t# The driver starts at the monitor's EDID native resolution when DDC\n\t# works, otherwise at a safe default (largest <= 1024x768).  Pin the\n\t# initial resolution explicitly with:\n\t# Option \"DefaultMode\" \"1366x768\"\nEndSection"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 4.9s)
+
+Now update `misc/README.md`:
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/misc/README.md",
+  "newString": "# Misc files\n\nThese files are related to drivers and will be needed at certain times.\n\n`00-rdc.conf`: X.Org config file for this driver only.\n\n`M2012-0.0.4.rom`: VBIOS for M2012 GPU (dump from `EBOX-3310MX`, BIOS Date: 08/16/2011, SoC is Vortex86MX+)\n\n`M2012-0.0.8.rom`: VBIOS for M2012 GPU (dump from `EBOX-3350DX2`, BIOS Date: 02/10/2017, SoC is Vortex86DX2)\n\n## Installation\n\n`make install` copies both ROM files to `/usr/lib/firmware-rdc/` (the directory\nis created if missing). The driver falls back to a ROM file from there when the\nPCI option ROM is unreadable; the default file is `M2012-0.0.8.rom`. Select a\ndifferent firmware file (or an absolute path) with:\n\n```\nOption \"VBIOS\" \"M2012-0.0.4.rom\"\n```\n\nin the `Device` section of the X config.\n\n## How to dump vbios rom\n\n```bash\ndd if=/dev/mem bs=1 skip=$((0xC0000)) count=32768 of=RDCVBIOS.ROM\n```",
+  "oldString": "# Misc files\n\nThese files are related to drivers and will be needed at certain times.\n\n`00-rdc.conf`: X.Org config file for this driver only.\n\n`M2012-0.0.4.rom`: VBIOS for M2012 GPU (dump from `EBOX-3310MX`, BIOS Date: 08/16/2011, SoC is Vortex86MX+)\n\n`M2012-0.0.8.rom`: VBIOS for M2012 GPU (dump from `EBOX-3350DX2`, BIOS Date: 02/10/2017, SoC is Vortex86DX2)\n\n## How to dump vbios rom\n\n```bash\ndd if=/dev/mem bs=1 skip=$((0xC0000)) count=32768 of=RDCVBIOS.ROM\n```"
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 2.4s)
+
+Now update AGENTS.md (hardware-constraints note and install section):
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/AGENTS.md",
+  "limit": 40,
+  "offset": 12
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/AGENTS.md</path>
+<type>file</type>
+<content>
+12: ## Build & install
+13: 
+14: ```bash
+15: bash autogen.sh                 # required after any Makefile.am change
+16: ./configure --prefix=/usr       # --prefix=/usr is REQUIRED (module goes to /usr/lib/xorg/modules)
+17: make
+18: sudo make install
+19: ```
+20: 
+21: `make install` installs:
+22: - `$(moduledir)/drivers/rdcm15_drv.so` — the driver module
+23: - `$(moduledir)/drivers/RDCVBIOS.ROM` — VBIOS (this board's PCI option ROM is unreadable; the driver falls back to this file at runtime)
+24: - `/etc/X11/xorg.conf.d/00-rdc.conf` — **hardcoded** path (Xorg reads snippets from `/etc/X11/xorg.conf.d` regardless of `sysconfdir`; AOSC uses `/usr/etc` so `$(sysconfdir)/...` is wrong here). Installed only if absent.
+25: 
+26: Clean (removes *all* autotools artifacts, not just objects):
+27: 
+28: ```bash
+29: make clean
+30: ```
+31: 
+32: Build prerequisites: `pkg-config`, autoconf/automake/libtool, `xorg-server` (dev headers), `pixman-1`. `AM_CFLAGS` already carries `-std=gnu99 -D_DEFAULT_SOURCE` (needed for `usleep`/POSIX decls under GCC ≥14).
+33: 
+34: ## Hardware constraints (these are why the port looks unusual — do not "fix" them away)
+35: 
+36: 1. **No `iopl()` on the target kernel** (`xf86EnableIO` logs "Function not implemented"). Raw `inb`/`outb` (compiler.h inline asm) faults with SIGSEGV. Therefore:
+37:    - All VGA port I/O goes through the GPU's **MMIO port alias**: `rdc_vgatool.c` `InPort`/`OutPort` use the global `RDC_IOBase` (set via `vSetRDCIOBase()`, base = `MMIOVirtualAddr + port`). Same mechanism as `CInt10.c` (`pRelated_IOAddress = pCBIOSExtension->pjIOAddress`).
+38:    - Embedded Controller (EC) ports 0x62/0x66 go through `/dev/port` (`open/lseek/read/write`, `EC_*` functions in `rdc_tool.c`), not `inb`/`outb`.
+39: 2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to `RDCVBIOS.ROM` (path constant `BIOS_ROM_PATH_FILE`). Handle `BIOSVirtualAddr == NULL` gracefully.
+40: 3. **VRAM is configurable** (16 MB default, up to 64 MB). Mode pool is filtered to fit `AvailableFBsize` (after capture/CMDQ/cursor reservations). Capture buffer (7 MB) is reserved only when enough FB remains for a 1920x1200@32bpp framebuffer.
+41: 
+42: ## Critical invariants (regressing any of these re-breaks the driver)
+43: 
+44: - **Screen callback signatures** are the modern Xorg ABI (`ScreenInit(ScreenPtr,int,char**)`, `SwitchMode(ScrnInfoPtr,DisplayModePtr)`, etc.). Do not revert to `int scrnIndex` forms.
+45: - **`ULONG`/`DWORD` are `unsigned int` (32-bit)** (see `BiosDef.h`). They must stay 32-bit: hardware registers and CMDQ packets are 32-bit; on LP64 they must not be `unsigned long`. `uint64` stays 64-bit.
+46: - **`xalloc`/`xfree`/`xcalloc`/`xrealloc` are compatibility macros** over malloc/free (modern Xorg removed them).
+47: - **EXA is the only accel path.** `HAVE_XAA` is off; PreInit auto-switches `useEXA=TRUE` and loads the `exa` module, else falls back to `noAccel`. `fb`/`vbe`/`xaa`/`ramdac` module loads are non-fatal where built-in/absent.
+48: - **Mode pool rules** (`RDCBuildModePool`, `RDCValidMode`): max resolution 1920x1200, refresh ≤ 60 Hz only, and only modes that fit `AvailableFBsize` are offered. `xorg.conf` must NOT force `Virtual` larger than the largest fitting mode.
+49: - **Initial mode must not be the GPU maximum.** PreInit calls `RDCReadEDID()` (driver-native I2C/DDC read, independent of the `vbe` module) before building the mode pool, then `RDCSelectInitialMode()` reorders `pScrn->modes` after validation so the server starts at the monitor's EDID native resolution (modes larger than the EDID max are dropped) and shrinks the virtual framebuffer (`virtualX`/`virtualY`/`displayWidth`) to the largest surviving mode — otherwise the RandR screen size stays at the GPU max even though the hardware mode is correct. EDID matching is tolerant: some panels encode the DTD active pixels without the spec's `-1` (e.g. 1281x1025 for a 1280x1024 panel), so `RDCFindModeBest` first tries an exact match and then the largest mode that fits inside the parsed size. Without EDID a safe mode (largest ≤ 1024x768) is used; `Option "DefaultMode" "1366x768"` pins it explicitly. Keep `bEDIDValid`/`usEDIDNativeH/V`/`usEDIDMaxH/V` (RDCRec) in sync with `pCBIOSExtension->bEDIDValid`/`wCRTDefaultH/V`.
+50: - **`RDCScreenInit` self-heals after logout/DM screen re-init** (PreInit is not re-run on that path). At the top of `RDCScreenInit`, if `MMIOVirtualAddr`/`FBVirtualAddr`/`BIOSVirtualAddr` are NULL (torn down by `RDCCloseScreen`), it must re-map them AND restore every PreInit-set CInt10 pointer:
+51:   - `pjIOAddress` = new `MMIOVirtualAddr`
+
+(Showing lines 12-51 of 87. Use offset=52 to continue.)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 7.6s)
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/AGENTS.md",
+  "newString": "`make install` installs:\n- `$(moduledir)/drivers/rdcm15_drv.so` — the driver module\n- `/usr/lib/firmware-rdc/M2012-0.0.4.rom`, `/usr/lib/firmware-rdc/M2012-0.0.8.rom` — VBIOS firmware (directory created if absent; this board's PCI option ROM is unreadable, so the driver falls back to these files at runtime)\n- `/etc/X11/xorg.conf.d/00-rdc.conf` — **hardcoded** path (Xorg reads snippets from `/etc/X11/xorg.conf.d` regardless of `sysconfdir`; AOSC uses `/usr/etc` so `$(sysconfdir)/...` is wrong here). Installed only if absent.",
+  "oldString": "`make install` installs:\n- `$(moduledir)/drivers/rdcm15_drv.so` — the driver module\n- `$(moduledir)/drivers/RDCVBIOS.ROM` — VBIOS (this board's PCI option ROM is unreadable; the driver falls back to this file at runtime)\n- `/etc/X11/xorg.conf.d/00-rdc.conf` — **hardcoded** path (Xorg reads snippets from `/etc/X11/xorg.conf.d` regardless of `sysconfdir`; AOSC uses `/usr/etc` so `$(sysconfdir)/...` is wrong here). Installed only if absent."
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 20.3s)
+
+**Tool: edit**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/AGENTS.md",
+  "newString": "2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to a ROM file under `/usr/lib/firmware-rdc` (constants `BIOS_ROM_PATH_DIR`/`BIOS_ROM_DEFAULT_FILE`), selectable via `Option \"VBIOS\" \"file.rom\"` (or an absolute path). Handle `BIOSVirtualAddr == NULL` gracefully.",
+  "oldString": "2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to `RDCVBIOS.ROM` (path constant `BIOS_ROM_PATH_FILE`). Handle `BIOSVirtualAddr == NULL` gracefully."
+}
+```
+
+**Output:**
+```
+Edit applied successfully.
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 11.7s)
+
+_Thinking:_
+
+Also update the architecture table in AGENTS.md which mentions the ROM files:
+```
+| `misc/M2012-0.0.4.rom` | VBIOS dump for the file fallback (Version 0.0.4) |
+| `misc/M2012-0.0.8.rom` | VBIOS dump for the file fallback (Version 0.0.8) and default |
+```
+These are still accurate. Fine.
+
+Now let me rebuild (autogen needed since Makefile.am changed) and verify.
+
+Also, I should double check the AGENTS.md note at line ~82 "Known limitations" and the section about firmware. Already updated the key parts.
+
+Let me also verify `snprintf` is available — rdc_tool.c includes stdio.h (line 26). Good.
+
+Now rebuild.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && bash autogen.sh >/tmp/kilo/autogen3.log 2>&1 && ./configure --prefix=/usr >/tmp/kilo/conf.log 2>&1 && make 2>&1 | grep -iE \"error|warning\" | grep -vE \"xf86PciInfo.h is deprecated|rdc_vgatool.c|rdc_extension.c|CInt10.c\"; echo \"grep_exit=$?\"; ls -la src/.libs/rdcm15_drv.so",
+  "description": "Re-autogen, configure, rebuild",
+  "timeout": 300000
+}
+```
+
+**Output:**
+```
+grep_exit=1
+-rwxr-xr-x 1 liaronce liaronce 1175048  8月22日 22:26 src/.libs/rdcm15_drv.so
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.1s)
+
+_Thinking:_
+
+Clean build. Now let me verify the install behavior with a DESTDIR staging test to confirm the firmware directory is created and files installed.
+
+Now let me verify the install creates `/usr/lib/firmware-rc` correctly via a staged install:
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && rm -rf /tmp/kilo/stage && make install DESTDIR=/tmp/kilo/stage 2>&1 | tail -15; echo ===; find /tmp/kilo/stage -type f -o -type d | sort",
+  "description": "Staged install test",
+  "timeout": 120000
+}
+```
+
+**Output:**
+```
+libtool: install: /usr/bin/install -c .libs/rdcm15_drv.so /tmp/kilo/stage/usr/lib/xorg/modules/drivers/rdcm15_drv.so
+libtool: install: /usr/bin/install -c .libs/rdcm15_drv.lai /tmp/kilo/stage/usr/lib/xorg/modules/drivers/rdcm15_drv.la
+libtool: warning: remember to run 'libtool --finish /usr/lib/xorg/modules/drivers'
+make[2]: 离开目录“/home/liaronce/git/xf86-video-rdc/src”
+make[1]: 离开目录“/home/liaronce/git/xf86-video-rdc/src”
+make[1]: 进入目录“/home/liaronce/git/xf86-video-rdc”
+make[2]: 进入目录“/home/liaronce/git/xf86-video-rdc”
+make[2]: 对“install-exec-am”无需做任何事。
+/usr/bin/mkdir -p /tmp/kilo/stage/usr/lib/firmware-rdc
+for f in M2012-0.0.4.rom M2012-0.0.8.rom; do \
+	/usr/bin/install -c -m 644 ./misc/$f /tmp/kilo/stage/usr/lib/firmware-rdc/$f; \
+done
+  Installing xorg.conf.d/00-rdc.conf to /etc/X11/xorg.conf.d
+make[2]: 离开目录“/home/liaronce/git/xf86-video-rdc”
+make[1]: 离开目录“/home/liaronce/git/xf86-video-rdc”
+===
+/tmp/kilo/stage
+/tmp/kilo/stage/etc
+/tmp/kilo/stage/etc/X11
+/tmp/kilo/stage/etc/X11/xorg.conf.d
+/tmp/kilo/stage/etc/X11/xorg.conf.d/00-rdc.conf
+/tmp/kilo/stage/usr
+/tmp/kilo/stage/usr/lib
+/tmp/kilo/stage/usr/lib/firmware-rdc
+/tmp/kilo/stage/usr/lib/firmware-rdc/M2012-0.0.4.rom
+/tmp/kilo/stage/usr/lib/firmware-rdc/M2012-0.0.8.rom
+/tmp/kilo/stage/usr/lib/xorg
+/tmp/kilo/stage/usr/lib/xorg/modules
+/tmp/kilo/stage/usr/lib/xorg/modules/drivers
+/tmp/kilo/stage/usr/lib/xorg/modules/drivers/rdcm15_drv.la
+/tmp/kilo/stage/usr/lib/xorg/modules/drivers/rdcm15_drv.so
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.3s)
+
+_Thinking:_
+
+The install works:
+- `/usr/lib/firmware-rdc/` created with both ROM files.
+- Driver module installed.
+- 00-rdc.conf installed.
+
+Now let me verify the file sizes of the ROM files match (32KB each).
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "ls -la /tmp/kilo/stage/usr/lib/firmware-rdc/; md5sum /tmp/kilo/stage/usr/lib/firmware-rdc/*.rom misc/*.rom 2>/dev/null",
+  "description": "Verify ROM files installed correctly"
+}
+```
+
+**Output:**
+```
+总计 64
+drwxr-xr-x 2 liaronce liaronce    80  8月22日 22:26 .
+drwxr-xr-x 4 liaronce liaronce    80  8月22日 22:26 ..
+-rw-r--r-- 1 liaronce liaronce 32768  8月22日 22:26 M2012-0.0.4.rom
+-rw-r--r-- 1 liaronce liaronce 32768  8月22日 22:26 M2012-0.0.8.rom
+a6b7c7b27e97501d4a48dd1d0bc47b9e  /tmp/kilo/stage/usr/lib/firmware-rdc/M2012-0.0.4.rom
+155046f3074cd8da608d1e5daadb5067  /tmp/kilo/stage/usr/lib/firmware-rdc/M2012-0.0.8.rom
+a6b7c7b27e97501d4a48dd1d0bc47b9e  misc/M2012-0.0.4.rom
+155046f3074cd8da608d1e5daadb5067  misc/M2012-0.0.8.rom
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 4.1s)
+
+_Thinking:_
+
+Both ROM files (32KB each) installed correctly, checksums match the source.
+
+Now let me review the final diff and also double-check the rdc_tool.c change compiles cleanly (already verified). Let me look at the final diff.
+
+One more thing to consider: the `make install` earlier also had a `rmdir $(DESTDIR)$(FIRMWARE_DIR)` in uninstall. Let me also verify `make uninstall` works with DESTDIR... actually not critical.
+
+Also — I should double check: is there any place else where the driver references the OLD path `/usr/lib/xorg/modules/drivers/` for the ROM? The grep earlier showed only rdc.h (now updated) and rdc_tool.c (now updated) and docs (llm-session.md is a session log, not code). Good.
+
+Let me also verify the `Vendor` section wording in my final response — I need to explain that Xorg's Vendor section data is unused, so the option is in the Device section.
+
+Let me view the final diff summary.
+
+Both ROMs (32KB each) installed correctly. Let me review the complete diff:
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && git status --short && git diff --stat && git diff Makefile.am src/rdc.h src/rdc_tool.c misc/00-rdc.conf misc/README.md AGENTS.md | head -150",
+  "description": "Show full diff of changes"
+}
+```
+
+**Output:**
+```
+ M AGENTS.md
+ M Makefile.am
+ M misc/00-rdc.conf
+ M misc/README.md
+ M src/Makefile
+ M src/rdc.h
+ M src/rdc_tool.c
+ AGENTS.md        |  4 ++--
+ Makefile.am      | 18 ++++++++++++++----
+ misc/00-rdc.conf |  6 ++++++
+ misc/README.md   | 13 +++++++++++++
+ src/Makefile     | 10 +++++-----
+ src/rdc.h        |  7 +++++--
+ src/rdc_tool.c   | 22 ++++++++++++++++++++--
+ 7 files changed, 65 insertions(+), 15 deletions(-)
+diff --git a/AGENTS.md b/AGENTS.md
+index ffa359e..e067c13 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -20,7 +20,7 @@ sudo make install
+ 
+ `make install` installs:
+ - `$(moduledir)/drivers/rdcm15_drv.so` — the driver module
+-- `$(moduledir)/drivers/RDCVBIOS.ROM` — VBIOS (this board's PCI option ROM is unreadable; the driver falls back to this file at runtime)
++- `/usr/lib/firmware-rdc/M2012-0.0.4.rom`, `/usr/lib/firmware-rdc/M2012-0.0.8.rom` — VBIOS firmware (directory created if absent; this board's PCI option ROM is unreadable, so the driver falls back to these files at runtime)
+ - `/etc/X11/xorg.conf.d/00-rdc.conf` — **hardcoded** path (Xorg reads snippets from `/etc/X11/xorg.conf.d` regardless of `sysconfdir`; AOSC uses `/usr/etc` so `$(sysconfdir)/...` is wrong here). Installed only if absent.
+ 
+ Clean (removes *all* autotools artifacts, not just objects):
+@@ -36,7 +36,7 @@ Build prerequisites: `pkg-config`, autoconf/automake/libtool, `xorg-server` (dev
+ 1. **No `iopl()` on the target kernel** (`xf86EnableIO` logs "Function not implemented"). Raw `inb`/`outb` (compiler.h inline asm) faults with SIGSEGV. Therefore:
+    - All VGA port I/O goes through the GPU's **MMIO port alias**: `rdc_vgatool.c` `InPort`/`OutPort` use the global `RDC_IOBase` (set via `vSetRDCIOBase()`, base = `MMIOVirtualAddr + port`). Same mechanism as `CInt10.c` (`pRelated_IOAddress = pCBIOSExtension->pjIOAddress`).
+    - Embedded Controller (EC) ports 0x62/0x66 go through `/dev/port` (`open/lseek/read/write`, `EC_*` functions in `rdc_tool.c`), not `inb`/`outb`.
+-2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to `RDCVBIOS.ROM` (path constant `BIOS_ROM_PATH_FILE`). Handle `BIOSVirtualAddr == NULL` gracefully.
++2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to a ROM file under `/usr/lib/firmware-rdc` (constants `BIOS_ROM_PATH_DIR`/`BIOS_ROM_DEFAULT_FILE`), selectable via `Option "VBIOS" "file.rom"` (or an absolute path). Handle `BIOSVirtualAddr == NULL` gracefully.
+ 3. **VRAM is configurable** (16 MB default, up to 64 MB). Mode pool is filtered to fit `AvailableFBsize` (after capture/CMDQ/cursor reservations). Capture buffer (7 MB) is reserved only when enough FB remains for a 1920x1200@32bpp framebuffer.
+ 
+ ## Critical invariants (regressing any of these re-breaks the driver)
+diff --git a/Makefile.am b/Makefile.am
+index 749514d..86fb1a7 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -21,15 +21,22 @@
+ AUTOMAKE_OPTIONS = foreign
+ SUBDIRS = src
+ 
+-EXTRA_DIST = misc/M2012-0.0.8.rom misc/00-rdc.conf
++EXTRA_DIST = misc/M2012-0.0.4.rom misc/M2012-0.0.8.rom misc/00-rdc.conf
+ 
+ # Xorg reads user config snippets from /etc/X11/xorg.conf.d regardless of the
+ # build's sysconfdir (e.g. AOSC uses /usr/etc but Xorg still reads /etc).
+ XORG_CONFIG_DIR = /etc/X11/xorg.conf.d
+ 
++# The driver reads its VBIOS firmware from this fixed directory (see
++# BIOS_ROM_PATH_DIR in rdc.h); Option "VBIOS" selects which file to use.
++FIRMWARE_DIR = /usr/lib/firmware-rdc
++RDC_VBIOS_FILES = M2012-0.0.4.rom M2012-0.0.8.rom
++
+ install-data-local:
+-	$(MKDIR_P) $(DESTDIR)$(moduledir)/drivers
+-	$(INSTALL_DATA) $(srcdir)/misc/M2012-0.0.8.rom $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
++	$(MKDIR_P) $(DESTDIR)$(FIRMWARE_DIR)
++	for f in $(RDC_VBIOS_FILES); do \
++		$(INSTALL_DATA) $(srcdir)/misc/$$f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \
++	done
+ 	@if test ! -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf; then \
+ 		echo "  Installing xorg.conf.d/00-rdc.conf to $(XORG_CONFIG_DIR)"; \
+ 		$(MKDIR_P) $(DESTDIR)$(XORG_CONFIG_DIR); \
+@@ -39,7 +46,10 @@ install-data-local:
+ 	fi
+ 
+ uninstall-local:
+-	rm -f $(DESTDIR)$(moduledir)/drivers/M2012-0.0.8.rom
++	for f in $(RDC_VBIOS_FILES); do \
++		rm -f $(DESTDIR)$(FIRMWARE_DIR)/$$f; \
++	done
++	rmdir $(DESTDIR)$(FIRMWARE_DIR) 2>/dev/null || true
+ 	rm -f $(DESTDIR)$(XORG_CONFIG_DIR)/00-rdc.conf
+ 
+ clean-local:
+diff --git a/misc/00-rdc.conf b/misc/00-rdc.conf
+index 0fed190..40e74c0 100644
+--- a/misc/00-rdc.conf
++++ b/misc/00-rdc.conf
+@@ -16,6 +16,12 @@ Section "Device"
+ 	# works, otherwise at a safe default (largest <= 1024x768).  Pin the
+ 	# initial resolution explicitly with:
+ 	# Option "DefaultMode" "1366x768"
++	#
++	# VBIOS firmware: the driver reads the ROM from /usr/lib/firmware-rdc
++	# (fallback when the PCI option ROM is unreadable).  Select a specific
++	# firmware file, or give an absolute path:
++	# Option "VBIOS" "M2012-0.0.8.rom"
++	# Option "VBIOS" "/usr/lib/firmware-rdc/M2012-0.0.4.rom"
+ EndSection
+ 
+ Section "Monitor"
+diff --git a/misc/README.md b/misc/README.md
+index b3808cc..dc99fd2 100644
+--- a/misc/README.md
++++ b/misc/README.md
+@@ -8,6 +8,19 @@ These files are related to drivers and will be needed at certain times.
+ 
+ `M2012-0.0.8.rom`: VBIOS for M2012 GPU (dump from `EBOX-3350DX2`, BIOS Date: 02/10/2017, SoC is Vortex86DX2)
+ 
++## Installation
++
++`make install` copies both ROM files to `/usr/lib/firmware-rdc/` (the directory
++is created if missing). The driver falls back to a ROM file from there when the
++PCI option ROM is unreadable; the default file is `M2012-0.0.8.rom`. Select a
++different firmware file (or an absolute path) with:
++
++```
++Option "VBIOS" "M2012-0.0.4.rom"
++```
++
++in the `Device` section of the X config.
++
+ ## How to dump vbios rom
+ 
+ ```bash
+diff --git a/src/rdc.h b/src/rdc.h
+index 7bb8904..7b8bc65 100644
+--- a/src/rdc.h
++++ b/src/rdc.h
+@@ -169,7 +169,8 @@ typedef enum {
+     OPTION_VRATIO,
+     OPTION_RANDRROTATION,    
+     OPTION_DOWN_SCALE,
+-    OPTION_DEFAULT_MODE
++    OPTION_DEFAULT_MODE,
++    OPTION_VBIOS
+ } RDCOpts;
+ 
+ static const OptionInfoRec RDCOptions[] = {
+@@ -185,6 +186,7 @@ static const OptionInfoRec RDCOptions[] = {
+     {OPTION_RANDRROTATION, "RandRRotation", OPTV_BOOLEAN,  {0}, FALSE},
+     {OPTION_DOWN_SCALE,    "DownScale",     OPTV_BOOLEAN,  {0}, FALSE},
+     {OPTION_DEFAULT_MODE,  "DefaultMode",   OPTV_STRING,   {0}, FALSE},
++    {OPTION_VBIOS,         "VBIOS",         OPTV_STRING,   {0}, FALSE},
+     {-1,                   NULL,            OPTV_NONE,     {0}, FALSE}
+ };
+ 
+@@ -268,7 +270,8 @@ typedef enum _CHIP_ID {
+ #define  CR_VIDEO_IDLE               BIT14
+ #define  CR_CR_IDLE                  BIT15
+ 
+-#define BIOS_ROM_PATH_FILE      "//usr//lib//xorg//modules//drivers//M2012-0.0.8.rom"
++#define BIOS_ROM_PATH_DIR       "/usr/lib/firmware-rdc"
++#define BIOS_ROM_DEFAULT_FILE   "M2012-0.0.8.rom"
+ #define BIOS_ROM_SIZE           32*1024
+ #define BIOS_ROM_PHY_BASE       0xC0000
+ 
+diff --git a/src/rdc_tool.c b/src/rdc_tool.c
+index 37cf323..bd02cd4 100644
+--- a/src/rdc_tool.c
++++ b/src/rdc_tool.c
+@@ -249,17 +249,35 @@ Bool RDCMapVBIOS(ScrnInfoPtr pScrn)
+     
+     if (pRDC->ulROMType == 0)
+     {
++        char BIOSPath[512];
++        const char *VBIOSFile = NULL;
++
+         
+         xfree(pRDC->BIOSVirtualAddr);
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.8s)
+
+_Thinking:_
+
+There's an unexpected file modified: `src/Makefile` — that's a build artifact generated by autogen/configure. It was modified by my configure run. Let me check git status: `src/Makefile` shows as modified. This is a generated file — was it tracked before? Let me check `git ls-files src/Makefile`.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && git ls-files src/Makefile; echo \"---\"; git status --short src/Makefile; echo \"---\"; git diff src/Makefile | head -30",
+  "description": "Check if src/Makefile is tracked"
+}
+```
+
+**Output:**
+```
+src/Makefile
+---
+ M src/Makefile
+---
+diff --git a/src/Makefile b/src/Makefile
+index d5e16e1..596fe2a 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -283,7 +283,7 @@ LIPO =
+ LN_S = ln -s
+ LTLIBOBJS = 
+ LT_SYS_LIBRARY_PATH = 
+-MAINT = 
++MAINT = #
+ MAKEINFO = ${SHELL} '/home/liaronce/git/xf86-video-rdc/missing' makeinfo
+ MANIFEST_TOOL = :
+ MAN_SUBSTS = 	-e 's|__vendorversion__|"$(PACKAGE_STRING)" "$(XORG_MAN_PAGE)"|' 	-e 's|__xorgversion__|"$(PACKAGE_STRING)" "$(XORG_MAN_PAGE)"|' 	-e 's|__xservername__|Xorg|g' 	-e 's|__xconfigfile__|xorg.conf|g' 	-e 's|__projectroot__|$(prefix)|g' 	-e 's|__apploaddir__|$(appdefaultdir)|g' 	-e 's|__appmansuffix__|$(APP_MAN_SUFFIX)|g' 	-e 's|__drivermansuffix__|$(DRIVER_MAN_SUFFIX)|g' 	-e 's|__adminmansuffix__|$(ADMIN_MAN_SUFFIX)|g' 	-e 's|__libmansuffix__|$(LIB_MAN_SUFFIX)|g' 	-e 's|__miscmansuffix__|$(MISC_MAN_SUFFIX)|g' 	-e 's|__filemansuffix__|$(FILE_MAN_SUFFIX)|g'
+@@ -360,7 +360,7 @@ mkdir_p = $(MKDIR_P)
+ moduledir = ${exec_prefix}/lib/xorg/modules
+ oldincludedir = /usr/include
+ pdfdir = ${docdir}
+-prefix = /usr/local
++prefix = /usr
+ program_transform_name = s,x,x,
+ psdir = ${docdir}
+ runstatedir = ${localstatedir}/run
+@@ -404,7 +404,7 @@ all: all-am
+ 
+ .SUFFIXES:
+ .SUFFIXES: .c .lo .o .obj
+-$(srcdir)/Makefile.in:  $(srcdir)/Makefile.am  $(am__configure_deps)
++$(srcdir)/Makefile.in: # $(srcdir)/Makefile.am  $(am__configure_deps)
+ 	@for dep in $?; do \
+ 	  case '$(am__configure_deps)' in \
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.7s)
+
+_Thinking:_
+
+`src/Makefile` is a tracked generated file (it was committed in the repo, apparently). My `./configure --prefix=/usr` regenerated it with different values (`prefix = /usr` instead of `/usr/local`, `MAINT` changed, etc.). This is a build artifact that happens to be tracked in the repo. I should NOT commit this change — it's an artifact of running configure on my machine. Let me restore it to avoid polluting the working tree.
+
+Actually wait — the repo tracks `src/Makefile`? That's unusual but it's how the repo is. My autogen/configure regenerated it. Let me revert it since it's not part of my intended changes.
+
+Let me restore src/Makefile from git.
+
+`src/Makefile` is a tracked build artifact that my local `configure` regenerated. Let me restore it since it's not part of the change:
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && git checkout -- src/Makefile && git status --short",
+  "description": "Restore generated src/Makefile"
+}
+```
+
+**Output:**
+```
+ M AGENTS.md
+ M Makefile.am
+ M misc/00-rdc.conf
+ M misc/README.md
+ M src/rdc.h
+ M src/rdc_tool.c
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 8.5s)
+
+_Thinking:_
+
+Now the working tree only has my intended changes. But wait — I restored src/Makefile, which means the build now uses the committed src/Makefile (which had prefix=/usr/local from the committed version). But I built with `./configure --prefix=/usr` which regenerated src/Makefile; I restored it to the committed version. The committed src/Makefile was generated from the OLD Makefile.am (before my changes). So the committed src/Makefile doesn't include my Makefile.am changes in its install rules... 
+
+Wait — src/Makefile is the Makefile for the src subdirectory (generated by automake from src/Makefile.am). My changes to the TOP-LEVEL Makefile.am affect the top-level Makefile, not src/Makefile. The top-level Makefile was also regenerated by autogen/configure — is the top-level Makefile tracked? `git status` shows only the 6 files, no top-level Makefile modified. So the top-level Makefile is gitignored. Good.
+
+But src/Makefile IS tracked (unusual). The install rules for the VBIOS files are in the TOP-LEVEL Makefile.am (install-data-local at top level), so src/Makefile doesn't matter for my change. The tracked src/Makefile is stale relative to src/Makefile.am perhaps, but that's pre-existing.
+
+However — there's a subtlety: since src/Makefile is tracked and I restored it, but the current src/Makefile.am might differ from what generated it... Let me check if src/Makefile.am was modified. `git status` doesn't show src/Makefile.am modified. So src/Makefile.am is unchanged. The tracked src/Makefile was generated from it at some point with prefix=/usr/local. My configure regenerated it with prefix=/usr (because I passed --prefix=/usr). I restored it. The build still works (I built successfully before restoring). Since the build for verification already happened, and the final repo state has the committed src/Makefile, that's fine — on the target, the user runs autogen+configure anyway.
+
+Wait, actually — is src/Makefile tracked going to be a problem for the final build verification? I already verified the build. The repo state now has my source changes + the committed (stale) src/Makefile. That's the state the user will have. Good.
+
+Hmm, but actually let me reconsider: the user's repo tracks src/Makefile, which is unusual and messy, but not my concern to fix. Leave it.
+
+Now — one more consideration: the top-level Makefile (generated, gitignored) — after restoring src/Makefile, the top-level Makefile still reflects my Makefile.am changes (it was regenerated by autogen). So `make install` would still work correctly with the new firmware-rdc rules. Good — I verified the staged install already.
+
+Now let me reconsider the final state and whether everything is complete:
+
+1. ✅ Makefile.am: installs both ROMs to /usr/lib/firmware-rdc (creates dir), uninstall, EXTRA_DIST.
+2. ✅ rdc.h: OPTION_VBIOS + RDCOptions entry, BIOS_ROM_PATH_DIR/BIOS_ROM_DEFAULT_FILE.
+3. ✅ rdc_tool.c: RDCMapVBIOS builds path from option (absolute or dir-relative), logs it.
+4. ✅ misc/00-rdc.conf: documented VBIOS option.
+5. ✅ misc/README.md: documented.
+6. ✅ AGENTS.md: updated.
+
+Let me double check the final rdc_tool.c section once more for correctness (the diff showed up to line ~35 of the diff; let me view the full edited region).
+
+**Tool: read**
+
+**Input:**
+```json
+{
+  "filePath": "/home/liaronce/git/xf86-video-rdc/src/rdc_tool.c",
+  "limit": 55,
+  "offset": 248
+}
+```
+
+**Output:**
+```
+<path>/home/liaronce/git/xf86-video-rdc/src/rdc_tool.c</path>
+<type>file</type>
+<content>
+248: 
+249:     
+250:     if (pRDC->ulROMType == 0)
+251:     {
+252:         char BIOSPath[512];
+253:         const char *VBIOSFile = NULL;
+254: 
+255:         
+256:         xfree(pRDC->BIOSVirtualAddr);
+257:         pRDC->BIOSVirtualAddr = NULL;
+258: 
+259:         /* Pick the VBIOS firmware file.  Option "VBIOS" selects a file inside
+260:          * /usr/lib/firmware-rdc, or an absolute path; otherwise the default
+261:          * firmware dump is used. */
+262:         if (pRDC->Options)
+263:             VBIOSFile = xf86GetOptValString(pRDC->Options, OPTION_VBIOS);
+264:         if (!VBIOSFile || !*VBIOSFile)
+265:             VBIOSFile = BIOS_ROM_DEFAULT_FILE;
+266:         if (VBIOSFile[0] == '/')
+267:             snprintf(BIOSPath, sizeof(BIOSPath), "%s", VBIOSFile);
+268:         else
+269:             snprintf(BIOSPath, sizeof(BIOSPath), "%s/%s", BIOS_ROM_PATH_DIR, VBIOSFile);
+270: 
+271:         fpVBIOS = fopen(BIOSPath, "r");
+272:         if (!fpVBIOS)
+273:         {
+274:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel,
+275:                            "BIOS ROM file \"%s\" not found()==\n", BIOSPath);
+276:         }
+277:         else
+278:         {
+279:             xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel,
+280:                            "Reading VBIOS from \"%s\"\n", BIOSPath);
+281:             pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);
+282:             pRDC->ulROMType = 2;
+283:             for (i = 0; i < BIOS_ROM_SIZE; i++)
+284:             {
+285:                 fscanf(fpVBIOS, "%c", pRDC->BIOSVirtualAddr+i);
+286:             }
+287:             fclose (fpVBIOS);
+288:         }
+289:     }
+290: 
+291:     if (pRDC->ulROMType == 0)
+292:     {
+293:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit1 RDCMapVBIOS()== No VBIOS\n");
+294:         return FALSE; 
+295:     }
+296: 
+297:     xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "pRDC->ulROMType = %d\n", pRDC->ulROMType);
+298: 
+299:     if ((*(USHORT*)pRDC->BIOSVirtualAddr == 0xAA55) && (*(USHORT*)(pRDC->BIOSVirtualAddr+0x40) == PCI_VENDOR_RDC))
+300:     {
+301:         xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, ErrorLevel, "==Exit RDCMapVBIOS()== return TRUE\n");
+302:         return TRUE;
+
+(Showing lines 248-302 of 454. Use offset=303 to continue.)
+</content>
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 3.8s)
+
+_Thinking:_
+
+The code looks correct. Let me do a final build to make sure the restored src/Makefile doesn't break anything and the module still builds with my changes. Actually, the restored src/Makefile was generated from the committed (pre-change) Makefile.am. But my changes were only to the TOP-LEVEL Makefile.am and source files. The src/Makefile controls the module compilation (from src/Makefile.am which is unchanged). So the build should still work. Let me verify with a quick make.
+
+**Tool: bash**
+
+**Input:**
+```json
+{
+  "command": "cd /home/liaronce/git/xf86-video-rdc && make 2>&1 | tail -5; echo \"EXIT=$?\"",
+  "description": "Final build verification",
+  "timeout": 300000
+}
+```
+
+**Output:**
+```
+make[2]: 对“all”无需做任何事。
+make[2]: 离开目录“/home/liaronce/git/xf86-video-rdc/src”
+make[2]: 进入目录“/home/liaronce/git/xf86-video-rdc”
+make[2]: 离开目录“/home/liaronce/git/xf86-video-rdc”
+make[1]: 离开目录“/home/liaronce/git/xf86-video-rdc”
+EXIT=0
+
+```
+
+---
+
+## Assistant (Code · DeepSeek V4 Flash · 6.0s)
+
+_Thinking:_
+
+The build is up to date (module already compiled). Everything works.
+
+Let me give a final summary. Also, I should clarify the "Vendor" section point: Xorg's `Vendor` section data is documented as unused ("The data therein is not used in this release"), and drivers read options from the Device section. So I placed the configurable VBIOS option in the Device section as `Option "VBIOS"`.
+
+Let me write the final summary in Chinese.
+
+完成。改动如下:
+
+## 安装
+
+**`Makefile.am`** — `make install` 现在会把 `misc/` 下两个 ROM 都装到 `/usr/lib/firmware-rdc/`(目录不存在时自动创建,`$(MKDIR_P)`,已验证 staged install 正确生成 `/usr/lib/firmware-rdc/M2012-0.0.4.rom` 与 `M2012-0.0.8.rom`,均为 32768 字节且校验和与源文件一致);`uninstall-local` 相应移除文件并尝试 `rmdir` 空目录。`EXTRA_DIST` 补上了 `M2012-0.0.4.rom`。
+
+## 驱动读取
+
+- **`src/rdc.h`**:原硬编码 `BIOS_ROM_PATH_FILE` 改为
+  - `BIOS_ROM_PATH_DIR = "/usr/lib/firmware-rdc"`
+  - `BIOS_ROM_DEFAULT_FILE = "M2012-0.0.8.rom"`
+- **`src/rdc_tool.c` `RDCMapVBIOS`**:文件回退路径改为运行时拼接——先取 `Option "VBIOS"`,若未设置用默认 `M2012-0.0.8.rom`;值为绝对路径(`/` 开头)则直接用,否则拼成 `/usr/lib/firmware-rdc/<file>`;日志打印实际读取路径。
+
+## 配置项
+
+Xorg 的 `Vendor` 段在手册(xorg.conf(5))中明确写着 **"The data therein is not used in this release"**,服务器不向驱动暴露该段,因此可配置项放在标准驱动选项所在的 **Device 段**:
+
+```
+Section "Device"
+    Driver "rdcm15"
+    Option "VBIOS" "M2012-0.0.4.rom"              # 从 /usr/lib/firmware-rdc 下选择
+    Option "VBIOS" "/usr/lib/firmware-rdc/..."    # 或绝对路径
+EndSection
+```
+
+`misc/00-rdc.conf` 中以注释形式给出了该选项说明;`misc/README.md` 与 `AGENTS.md` 同步更新。
+
+构建零新增警告(已跑 `autogen.sh + configure --prefix=/usr + make`),并用 `DESTDIR` 暂存验证了安装目录创建与文件落位。
 
 ---
 

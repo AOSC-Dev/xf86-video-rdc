@@ -249,17 +249,35 @@ Bool RDCMapVBIOS(ScrnInfoPtr pScrn)
     
     if (pRDC->ulROMType == 0)
     {
+        char BIOSPath[512];
+        const char *VBIOSFile = NULL;
+
         
         xfree(pRDC->BIOSVirtualAddr);
         pRDC->BIOSVirtualAddr = NULL;
 
-        fpVBIOS = fopen(BIOS_ROM_PATH_FILE, "r");
+        /* Pick the VBIOS firmware file.  Option "VBIOS" selects a file inside
+         * /usr/lib/firmware-rdc, or an absolute path; otherwise the default
+         * firmware dump is used. */
+        if (pRDC->Options)
+            VBIOSFile = xf86GetOptValString(pRDC->Options, OPTION_VBIOS);
+        if (!VBIOSFile || !*VBIOSFile)
+            VBIOSFile = BIOS_ROM_DEFAULT_FILE;
+        if (VBIOSFile[0] == '/')
+            snprintf(BIOSPath, sizeof(BIOSPath), "%s", VBIOSFile);
+        else
+            snprintf(BIOSPath, sizeof(BIOSPath), "%s/%s", BIOS_ROM_PATH_DIR, VBIOSFile);
+
+        fpVBIOS = fopen(BIOSPath, "r");
         if (!fpVBIOS)
         {
-            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel, "BIOS ROM file \"/usr/lib/xorg/modules/drivers/M2012-0.0.8.rom\" not found()==\n");
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel,
+                           "BIOS ROM file \"%s\" not found()==\n", BIOSPath);
         }
         else
         {
+            xf86DrvMsgVerb(pScrn->scrnIndex, X_INFO, InfoLevel,
+                           "Reading VBIOS from \"%s\"\n", BIOSPath);
             pRDC->BIOSVirtualAddr = xnfalloc(BIOS_ROM_SIZE);
             pRDC->ulROMType = 2;
             for (i = 0; i < BIOS_ROM_SIZE; i++)

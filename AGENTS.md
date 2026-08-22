@@ -20,7 +20,7 @@ sudo make install
 
 `make install` installs:
 - `$(moduledir)/drivers/rdcm15_drv.so` — the driver module
-- `$(moduledir)/drivers/RDCVBIOS.ROM` — VBIOS (this board's PCI option ROM is unreadable; the driver falls back to this file at runtime)
+- `/usr/lib/firmware-rdc/M2012-0.0.4.rom`, `/usr/lib/firmware-rdc/M2012-0.0.8.rom` — VBIOS firmware (directory created if absent; this board's PCI option ROM is unreadable, so the driver falls back to these files at runtime)
 - `/etc/X11/xorg.conf.d/00-rdc.conf` — **hardcoded** path (Xorg reads snippets from `/etc/X11/xorg.conf.d` regardless of `sysconfdir`; AOSC uses `/usr/etc` so `$(sysconfdir)/...` is wrong here). Installed only if absent.
 
 Clean (removes *all* autotools artifacts, not just objects):
@@ -36,7 +36,7 @@ Build prerequisites: `pkg-config`, autoconf/automake/libtool, `xorg-server` (dev
 1. **No `iopl()` on the target kernel** (`xf86EnableIO` logs "Function not implemented"). Raw `inb`/`outb` (compiler.h inline asm) faults with SIGSEGV. Therefore:
    - All VGA port I/O goes through the GPU's **MMIO port alias**: `rdc_vgatool.c` `InPort`/`OutPort` use the global `RDC_IOBase` (set via `vSetRDCIOBase()`, base = `MMIOVirtualAddr + port`). Same mechanism as `CInt10.c` (`pRelated_IOAddress = pCBIOSExtension->pjIOAddress`).
    - Embedded Controller (EC) ports 0x62/0x66 go through `/dev/port` (`open/lseek/read/write`, `EC_*` functions in `rdc_tool.c`), not `inb`/`outb`.
-2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to `RDCVBIOS.ROM` (path constant `BIOS_ROM_PATH_FILE`). Handle `BIOSVirtualAddr == NULL` gracefully.
+2. **PCI option ROM unreadable** (`BIOS @ 0x????????`). `pci_device_read_rom` fails; `RDCMapVBIOS` falls back to a ROM file under `/usr/lib/firmware-rdc` (constants `BIOS_ROM_PATH_DIR`/`BIOS_ROM_DEFAULT_FILE`), selectable via `Option "VBIOS" "file.rom"` (or an absolute path). Handle `BIOSVirtualAddr == NULL` gracefully.
 3. **VRAM is configurable** (16 MB default, up to 64 MB). Mode pool is filtered to fit `AvailableFBsize` (after capture/CMDQ/cursor reservations). Capture buffer (7 MB) is reserved only when enough FB remains for a 1920x1200@32bpp framebuffer.
 
 ## Critical invariants (regressing any of these re-breaks the driver)
